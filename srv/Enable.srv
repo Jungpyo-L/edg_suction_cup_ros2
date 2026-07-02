@@ -1,0 +1,3 @@
+bool enable_data_logging
+---
+string output_file_name

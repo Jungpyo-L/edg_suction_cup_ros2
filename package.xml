@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>suction_cup</name>
+  <version>0.1.0</version>
+  <description>ROS 2 suction cup experiment package based on EDG UR10 tools.</description>
+
+  <maintainer email="jungpyo@berkeley.edu">jungpyo</maintainer>
+  <author email="jungpyolee@berkeley.edu">Jungpyo Lee</author>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>rclpy</depend>
+  <depend>rosidl_runtime_py</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2_ros</depend>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>edg_netft_ros2</exec_depend>
+  <exec_depend>plotjuggler</exec_depend>
+  <exec_depend>plotjuggler_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-pandas</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
