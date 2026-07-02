@@ -1,18 +1,22 @@
-# Suction Cup ROS 2 Package
+# EDG Suction Cup ROS 2
+
+GitHub repository: [edg_suction_cup_ros2](https://github.com/Jungpyo-L/edg_suction_cup_ros2)
 
 This package is the ROS 2 suction cup experiment stack for the EDG UR10 setup. It supports UR10 robot control, TCP pose publishing, ATI force/torque streaming, ESP32 pressure and PWM hardware, live PlotJuggler visualization, and experiment data logging.
+
+The GitHub repository is named `edg_suction_cup_ros2`, but the ROS 2 package name is `suction_cup`. Clone the repository into your workspace `src` directory as `suction_cup` so `colcon` and `ros2 launch` commands work as written below.
 
 ## Supported Platform
 
 - Ubuntu 24.04
 - ROS 2 Jazzy Jalisco
 - Universal Robots ROS 2 driver stack
-- ATI NetFT sensor support through the ROS 2 `edg_netft_ros2` package
+- ATI NetFT sensor support through the ROS 2 [`edg_netft_ros2`](https://github.com/Jungpyo-L/edg_netft_ros2) package
 - ESP32 pressure sensor and PWM hardware over serial
 
-The ROS package name is `suction_cup`. This is an `ament_cmake` package that installs Python nodes as ROS 2 executables.
+This is an `ament_cmake` package that installs Python nodes as ROS 2 executables.
 
-## Workspace Dependencies
+## Workspace Setup
 
 Clone these packages into the same ROS 2 workspace:
 
@@ -21,6 +25,14 @@ mkdir -p ~/ros2_ws/src
 cd ~/ros2_ws/src
 git clone https://github.com/Jungpyo-L/edg_suction_cup_ros2.git suction_cup
 git clone https://github.com/Jungpyo-L/edg_netft_ros2.git
+```
+
+Expected workspace layout:
+
+```text
+~/ros2_ws/src/
+  suction_cup/          # cloned from edg_suction_cup_ros2
+  edg_netft_ros2/
 ```
 
 You also need the UR ROS 2 driver stack and PlotJuggler:
@@ -308,3 +320,4 @@ Jungpyo Lee
 
 - Email: jungpyolee@berkeley.edu
 - GitHub: [@Jungpyo-L](https://github.com/Jungpyo-L)
+- Repository: [edg_suction_cup_ros2](https://github.com/Jungpyo-L/edg_suction_cup_ros2)
