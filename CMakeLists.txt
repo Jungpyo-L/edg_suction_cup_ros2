@@ -23,6 +23,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   src/robotStatePublisher.py
   src/simple_data_log.py
   src/simple_experiment.py
+  src/simple_experiment_force.py
+  src/simple_experiment_penetration.py
   src/simple_robot_control.py
   DESTINATION lib/${PROJECT_NAME}
 )
