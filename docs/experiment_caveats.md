@@ -31,20 +31,29 @@ records the caveats identified while reviewing the method and the data pipeline.
 
 ## B. Multi-chamber physics
 
+> **This cup has 3 chambers** (arranged 120° apart, per `calculate_unit_vectors`
+> for `n=3`). Note the code's `four_pressure` name and `n_ch=4` default are
+> misleading — channel count is auto-detected from `data.ch` at runtime.
+
 6. **Apex, axis-aligned = axisymmetric → no inter-channel variation.** A sphere
-   pressed square-on drives all four chambers equally; you get only a common-mode
+   pressed square-on drives all three chambers equally; you get only a common-mode
    change. This is why one dome frustrates a per-channel model.
 7. **Inter-channel variation on the dome = tilt (a "dipole").** The chamber
    differences encode the **surface-normal direction**, not curvature.
 8. **Curvature needs directional curvature (a "quadrupole").** Only a surface
-   curved more in one direction than another (a **cylinder**) makes one
-   chamber-pair differ from the orthogonal pair. A sphere cannot produce this.
+   curved more in one direction than another (a **cylinder**) makes the chambers
+   differ by curvature. A sphere cannot produce this.
 9. **The existing haptic-search vector (Σ P·û) is blind to symmetric curvature** —
-   opposite chambers cancel in the sum. It reads tilt only.
-10. **Useful decomposition of the 4 channels:**
+   it extracts the dipole/tilt only.
+10. **With only 3 chambers you cannot separate curvature from tilt.** Three scalar
+    readings fully decompose into mean (1 DOF) + 2D dipole/tilt (2 DOF) = 3 DOF —
+    every sensor is used up. There is **no remaining degree of freedom for a
+    quadrupole**, and a quadrupole (curvature anisotropy) *aliases into the dipole*
+    with only 3 samples around the circle. So a 3-chamber cup measures:
     - mean → mean curvature + preload,
-    - dipole (opposite-pair difference) → tilt / surface normal,
-    - quadrupole (pair-vs-pair) → curvature anisotropy.
+    - dipole (2D) → tilt / surface normal (with any curvature anisotropy aliased in).
+
+    Cleanly resolving a curvature-anisotropy signal would need ≥4 chambers.
 
 ## C. Force-guided descent method
 
@@ -104,4 +113,6 @@ records the caveats identified while reviewing the method and the data pipeline.
 
 - Close the cheap data gaps: log `netft_data` (#19) and record apex xy + radius (#23).
 - If the goal is truly curvature: add cylinders / multiple radii and press at the
-  crest, axis aligned to a chamber pair, at controlled force (#1, #8).
+  crest at controlled force (#1, #8). Note (#10) that a 3-chamber cup cannot
+  resolve curvature *direction* independently of tilt — separating curvature
+  anisotropy would need ≥4 chambers.
