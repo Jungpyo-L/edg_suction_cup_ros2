@@ -10,7 +10,7 @@ import time
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PointStamped
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import Int8
 
@@ -54,11 +54,10 @@ class ApexListener:
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
         )
-        self.sub = node.create_subscription(PoseStamped, topic, self.callback, qos)
+        self.sub = node.create_subscription(PointStamped, topic, self.callback, qos)
 
     def callback(self, msg):
-        p = msg.pose.position
-        self.samples.append([p.x, p.y, p.z])
+        self.samples.append([msg.point.x, msg.point.y, msg.point.z])
 
     def wait_for_apex(self, num_samples=20, timeout_sec=20.0):
         """Average the next num_samples apex estimates. Raises on timeout."""

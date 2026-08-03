@@ -128,12 +128,11 @@ box, voxel downsamples it, removes statistical outliers, and then publishes:
 
 ```text
 /filtered_points   sensor_msgs/PointCloud2    filtered cloud in base_link
-/sphere_apex       geometry_msgs/PoseStamped  highest point of the cloud
+/sphere_apex       geometry_msgs/PointStamped  highest point of the cloud
 ```
 
-`sphere_apex` carries identity orientation - it is a position, and the tool
-rotation belongs to the experiment. Move to `pose.position` and apply your own
-orientation.
+`sphere_apex` is a position only - the tool rotation belongs to the experiment,
+which applies its own `ROTVEC_DEFAULT`.
 
 The apex is the centroid (in x and y) of all points within `apex_band` of the
 highest point, median filtered over `apex_history` frames. On a sphere the highest

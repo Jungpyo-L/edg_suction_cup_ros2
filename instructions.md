@@ -44,8 +44,8 @@ highest thing in the cloud and the apex silently jumps to the arm — the topic 
 publishing plausible-looking numbers, so watch `/sphere_apex` in RViz rather than
 trusting it.
 
-`/sphere_apex` is a `geometry_msgs/PoseStamped` with identity orientation: it is a
-position, and the tool rotation belongs to the experiment.
+`/sphere_apex` is a `geometry_msgs/PointStamped`: a position only. The tool
+rotation belongs to the experiment, which applies its own `ROTVEC_DEFAULT`.
 
 ### Verification gates
 

@@ -9,7 +9,7 @@ from collections import deque
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PointStamped
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from rclpy.time import Time
@@ -118,7 +118,7 @@ class RealSenseSphereDetector(Node):
             PointCloud2, self.get_parameter("output_topic").value, filtered_qos
         )
         self.apex_pub = self.create_publisher(
-            PoseStamped, self.get_parameter("apex_topic").value, apex_qos
+            PointStamped, self.get_parameter("apex_topic").value, apex_qos
         )
         self.cloud_sub = self.create_subscription(
             PointCloud2,
@@ -196,14 +196,11 @@ class RealSenseSphereDetector(Node):
         self.apex_history.append(apex)
         smoothed = np.median(np.asarray(self.apex_history), axis=0)
 
-        # Orientation is left as identity: the apex is a position, and the tool
-        # rotation is the experiment's business (see ROTVEC_DEFAULT).
-        apex_msg = PoseStamped()
+        apex_msg = PointStamped()
         apex_msg.header = header
-        apex_msg.pose.position.x = float(smoothed[0])
-        apex_msg.pose.position.y = float(smoothed[1])
-        apex_msg.pose.position.z = float(smoothed[2])
-        apex_msg.pose.orientation.w = 1.0
+        apex_msg.point.x = float(smoothed[0])
+        apex_msg.point.y = float(smoothed[1])
+        apex_msg.point.z = float(smoothed[2])
         self.apex_pub.publish(apex_msg)
 
     def estimate_apex(self, points):
