@@ -127,14 +127,23 @@ The detector transforms the raw cloud into `base_link`, crops it to the workspac
 box, voxel downsamples it, removes statistical outliers, and then publishes:
 
 ```text
-/filtered_points   sensor_msgs/PointCloud2   filtered cloud in base_link
-/sphere_apex       geometry_msgs/PointStamped   highest point of the cloud
+/filtered_points   sensor_msgs/PointCloud2    filtered cloud in base_link
+/sphere_apex       geometry_msgs/PoseStamped  highest point of the cloud
 ```
+
+`sphere_apex` carries identity orientation - it is a position, and the tool
+rotation belongs to the experiment. Move to `pose.position` and apply your own
+orientation.
 
 The apex is the centroid (in x and y) of all points within `apex_band` of the
 highest point, median filtered over `apex_history` frames. On a sphere the highest
 point sits directly above the sphere center, so `sphere_apex` gives the sweep its
 origin.
+
+The crop box defaults leave x and y unbounded and filter on height alone, since
+the sphere apex is the topmost point in the scene. Set `crop_max`'s z snugly above
+the sphere: with it too high, the robot arm becomes the highest thing in the cloud
+and the apex jumps to the arm.
 
 Default arguments:
 
@@ -145,8 +154,8 @@ camera_frame:=camera_link
 input_topic:=/camera/camera/depth/color/points
 camera_x/y/z:=0.0/0.0/0.6
 camera_roll/pitch/yaw:=3.1416/0.0/0.0
-crop_min:=[0.40, -0.35, -0.02]
-crop_max:=[0.75, 0.10, 0.30]
+crop_min:=[-100.0, -100.0, 0.0]
+crop_max:=[100.0, 100.0, 1.0]
 voxel_leaf:=0.002
 ```
 

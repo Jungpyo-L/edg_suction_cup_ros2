@@ -9,7 +9,7 @@ from collections import deque
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from rclpy.time import Time
@@ -57,9 +57,12 @@ class RealSenseSphereDetector(Node):
         # Frame the cloud is transformed into before filtering. Everything below
         # (crop box, "highest point") is expressed in this frame.
         self.declare_parameter("target_frame", "base_link")
-        # Workspace crop box in target_frame, in meters.
-        self.declare_parameter("crop_min", [0.40, -0.35, -0.02])
-        self.declare_parameter("crop_max", [0.75, 0.10, 0.30])
+        # Workspace crop box in target_frame, in meters. Defaults leave x and y
+        # unbounded and filter on height alone: the sphere apex is the topmost
+        # point in the scene, so only z needs constraining. Keep z_max snug above
+        # the sphere or the robot arm becomes the highest thing in the cloud.
+        self.declare_parameter("crop_min", [-100.0, -100.0, 0.0])
+        self.declare_parameter("crop_max", [100.0, 100.0, 1.0])
         self.declare_parameter("voxel_leaf", 0.002)
         self.declare_parameter("outlier_neighbors", 12)
         self.declare_parameter("outlier_std_ratio", 1.0)
@@ -113,7 +116,7 @@ class RealSenseSphereDetector(Node):
             PointCloud2, self.get_parameter("output_topic").value, filtered_qos
         )
         self.apex_pub = self.create_publisher(
-            PointStamped, self.get_parameter("apex_topic").value, apex_qos
+            PoseStamped, self.get_parameter("apex_topic").value, apex_qos
         )
         self.cloud_sub = self.create_subscription(
             PointCloud2,
@@ -191,11 +194,14 @@ class RealSenseSphereDetector(Node):
         self.apex_history.append(apex)
         smoothed = np.median(np.asarray(self.apex_history), axis=0)
 
-        apex_msg = PointStamped()
+        # Orientation is left as identity: the apex is a position, and the tool
+        # rotation is the experiment's business (see ROTVEC_DEFAULT).
+        apex_msg = PoseStamped()
         apex_msg.header = header
-        apex_msg.point.x = float(smoothed[0])
-        apex_msg.point.y = float(smoothed[1])
-        apex_msg.point.z = float(smoothed[2])
+        apex_msg.pose.position.x = float(smoothed[0])
+        apex_msg.pose.position.y = float(smoothed[1])
+        apex_msg.pose.position.z = float(smoothed[2])
+        apex_msg.pose.orientation.w = 1.0
         self.apex_pub.publish(apex_msg)
 
     def estimate_apex(self, points):
