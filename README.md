@@ -114,6 +114,56 @@ ros2 launch suction_cup suction_experiment.launch.py launch_plot:=false
 ros2 launch suction_cup suction_experiment.launch.py plotjuggler_layout:=/path/to/my_preset.xml
 ```
 
+### RealSense Sphere Detection
+
+`realsense_sphere.launch.py` starts the Intel RealSense camera, publishes the camera
+extrinsic as a static transform, and runs `realsense_sphere_detector.py`.
+
+```bash
+ros2 launch suction_cup realsense_sphere.launch.py
+```
+
+The detector transforms the raw cloud into `base_link`, crops it to the workspace
+box, voxel downsamples it, removes statistical outliers, and then publishes:
+
+```text
+/filtered_points   sensor_msgs/PointCloud2   filtered cloud in base_link
+/sphere_apex       geometry_msgs/PointStamped   highest point of the cloud
+```
+
+The apex is the centroid (in x and y) of all points within `apex_band` of the
+highest point, median filtered over `apex_history` frames. On a sphere the highest
+point sits directly above the sphere center, so `sphere_apex` gives the sweep its
+origin.
+
+Default arguments:
+
+```text
+launch_camera:=true
+base_frame:=base_link
+camera_frame:=camera_link
+input_topic:=/camera/camera/depth/color/points
+camera_x/y/z:=0.0/0.0/0.6
+camera_roll/pitch/yaw:=3.1416/0.0/0.0
+crop_min:=[0.40, -0.35, -0.02]
+crop_max:=[0.75, 0.10, 0.30]
+voxel_leaf:=0.002
+```
+
+The `camera_*` defaults are placeholders. Replace them with a real hand-eye
+calibration of `base_link -> camera_link`, otherwise every detected apex is wrong
+in the robot frame. Verify the cloud lands where you expect before running motion:
+
+```bash
+ros2 launch suction_cup realsense_sphere.launch.py launch_camera:=true
+ros2 run rviz2 rviz2   # fixed frame base_link, add /filtered_points
+ros2 topic echo /sphere_apex
+```
+
+If `/filtered_points` is empty, the crop box is usually the cause. Widen
+`crop_min` / `crop_max` until the sphere appears, then tighten them back down so
+the table and fixture are excluded.
+
 Note: `ur_experiment.launch.py` is the older generic experiment launch file and does not include the ESP32 pressure or PWM nodes. For suction cup experiments, prefer `suction_experiment.launch.py`.
 
 ## ESP32 Hardware Nodes
@@ -191,6 +241,13 @@ Suction cup pressure data:
 /sync
 ```
 
+RealSense perception:
+
+```text
+/filtered_points
+/sphere_apex
+```
+
 Check that nodes and topics are alive with:
 
 ```bash
@@ -254,6 +311,25 @@ ros2 run suction_cup simple_robot_control.py
 ros2 run suction_cup simple_data_log.py
 ros2 run suction_cup simple_experiment.py
 ```
+
+Vision-guided sphere sweep. Waypoints are offsets from the detected apex, so the
+same command works wherever the sphere sits in the workspace:
+
+```bash
+# print the planned poses without moving the robot
+ros2 run suction_cup sphere_sweep_experiment.py --dry-run
+
+# apex, then 30 mm left and right, pressing 1 mm into the surface
+ros2 run suction_cup sphere_sweep_experiment.py \
+  --offsets "-0.030,0,-0.004; 0,0,0; 0.030,0,-0.004" --press-depth 0.001
+```
+
+`--offsets` is a `;`-separated list of `dx,dy,dz` in meters relative to the apex,
+`--press-depth` is applied downward at every touch pose, and `--max-offset`
+rejects any waypoint farther than 10 cm from the apex. The script waits for
+`--apex-samples` apex messages, averages them, prints the plan, and then steps
+through hover and touch poses on `<Enter>` like `simple_experiment.py`. Always run
+`--dry-run` first and confirm the printed z values against the fixture.
 
 Main suction cup lateral positioning demo:
 
