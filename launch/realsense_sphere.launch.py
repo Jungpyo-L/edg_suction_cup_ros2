@@ -41,8 +41,8 @@ def generate_launch_description():
         DeclareLaunchArgument("camera_yaw", default_value="0.0"),
         # Workspace crop box in base_frame, meters. To pass every point through
         # for alignment debugging, see the passthrough defaults in the README.
-        DeclareLaunchArgument("crop_min", default_value="[0.40, -0.35, -0.02]"),
-        DeclareLaunchArgument("crop_max", default_value="[0.75, 0.10, 0.30]"),
+        DeclareLaunchArgument("crop_min", default_value="[-100.0, -100.0, -1.0]"),
+        DeclareLaunchArgument("crop_max", default_value="[100.0, 100.0, 1.0]"),
         DeclareLaunchArgument("voxel_leaf", default_value="0.002"),
         # 0 disables outlier removal, which is the expensive stage on a full cloud.
         DeclareLaunchArgument("outlier_neighbors", default_value="12"),

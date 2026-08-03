@@ -61,7 +61,9 @@ class RealSenseSphereDetector(Node):
         # unbounded and filter on height alone: the sphere apex is the topmost
         # point in the scene, so only z needs constraining. Keep z_max snug above
         # the sphere or the robot arm becomes the highest thing in the cloud.
-        self.declare_parameter("crop_min", [-100.0, -100.0, 0.0])
+        # z_min is below the base origin because the table sits lower than the
+        # robot base; z_max only needs to sit above the sphere and below the arm.
+        self.declare_parameter("crop_min", [-100.0, -100.0, -1.0])
         self.declare_parameter("crop_max", [100.0, 100.0, 1.0])
         self.declare_parameter("voxel_leaf", 0.002)
         self.declare_parameter("outlier_neighbors", 12)
