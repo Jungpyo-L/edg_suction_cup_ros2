@@ -86,8 +86,17 @@ class RealSenseSphereDetector(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        cloud_qos = QoSProfile(
+        # The RealSense wrapper publishes best-effort, so the subscription must
+        # be best-effort too or it receives nothing.
+        sensor_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        # The filtered cloud is published reliably instead: it is a low-rate debug
+        # output, and reliable is what `ros2 topic echo` and RViz default to.
+        filtered_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
         )
@@ -101,7 +110,7 @@ class RealSenseSphereDetector(Node):
         )
 
         self.cloud_pub = self.create_publisher(
-            PointCloud2, self.get_parameter("output_topic").value, cloud_qos
+            PointCloud2, self.get_parameter("output_topic").value, filtered_qos
         )
         self.apex_pub = self.create_publisher(
             PointStamped, self.get_parameter("apex_topic").value, apex_qos
@@ -110,10 +119,9 @@ class RealSenseSphereDetector(Node):
             PointCloud2,
             self.get_parameter("input_topic").value,
             self.cloud_callback,
-            cloud_qos,
+            sensor_qos,
         )
 
-        self.warned_about_tf = False
         self.get_logger().info(
             "Filtering %s -> %s in frame %s"
             % (
@@ -142,12 +150,15 @@ class RealSenseSphereDetector(Node):
             try:
                 rotation, translation = self.lookup_cloud_transform(msg.header.frame_id)
             except tf2_ros.TransformException as exc:
-                if not self.warned_about_tf:
-                    self.get_logger().warn(
-                        "No transform %s -> %s yet (%s). Publish the camera extrinsic "
-                        "before expecting filtered_points." % (msg.header.frame_id, self.target_frame, exc)
-                    )
-                    self.warned_about_tf = True
+                # Throttled rather than one-shot: the extrinsic often arrives a
+                # moment after the first cloud, and a stale startup warning is
+                # worse than no warning at all.
+                self.get_logger().warn(
+                    "No transform %s -> %s yet (%s). Publish the camera extrinsic "
+                    "before expecting filtered_points."
+                    % (msg.header.frame_id, self.target_frame, exc),
+                    throttle_duration_sec=5.0,
+                )
                 return
             points = points @ rotation.T + translation
 
@@ -167,6 +178,10 @@ class RealSenseSphereDetector(Node):
         header.frame_id = self.target_frame
         self.cloud_pub.publish(
             point_cloud2.create_cloud_xyz32(header, points.astype(np.float32))
+        )
+        self.get_logger().info(
+            "filtered_points: %d points in %s" % (points.shape[0], self.target_frame),
+            throttle_duration_sec=5.0,
         )
 
         apex = self.estimate_apex(points)

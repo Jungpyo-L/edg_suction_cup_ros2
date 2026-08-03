@@ -39,10 +39,14 @@ def generate_launch_description():
         DeclareLaunchArgument("camera_roll", default_value="3.1416"),
         DeclareLaunchArgument("camera_pitch", default_value="0.0"),
         DeclareLaunchArgument("camera_yaw", default_value="0.0"),
-        # Workspace crop box in base_frame, meters.
+        # Workspace crop box in base_frame, meters. To pass every point through
+        # for alignment debugging, see the passthrough defaults in the README.
         DeclareLaunchArgument("crop_min", default_value="[0.40, -0.35, -0.02]"),
         DeclareLaunchArgument("crop_max", default_value="[0.75, 0.10, 0.30]"),
         DeclareLaunchArgument("voxel_leaf", default_value="0.002"),
+        # 0 disables outlier removal, which is the expensive stage on a full cloud.
+        DeclareLaunchArgument("outlier_neighbors", default_value="12"),
+        DeclareLaunchArgument("min_points", default_value="50"),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(realsense_launch),
@@ -79,6 +83,9 @@ def generate_launch_description():
                 "crop_min": ParameterValue(LaunchConfiguration("crop_min"), value_type=List[float]),
                 "crop_max": ParameterValue(LaunchConfiguration("crop_max"), value_type=List[float]),
                 "voxel_leaf": ParameterValue(LaunchConfiguration("voxel_leaf"), value_type=float),
+                "outlier_neighbors": ParameterValue(
+                    LaunchConfiguration("outlier_neighbors"), value_type=int),
+                "min_points": ParameterValue(LaunchConfiguration("min_points"), value_type=int),
             }],
         ),
     ])

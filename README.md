@@ -157,12 +157,35 @@ in the robot frame. Verify the cloud lands where you expect before running motio
 ```bash
 ros2 launch suction_cup realsense_sphere.launch.py launch_camera:=true
 ros2 run rviz2 rviz2   # fixed frame base_link, add /filtered_points
+ros2 topic hz /filtered_points
 ros2 topic echo /sphere_apex
 ```
 
 If `/filtered_points` is empty, the crop box is usually the cause. Widen
 `crop_min` / `crop_max` until the sphere appears, then tighten them back down so
 the table and fixture are excluded.
+
+#### Passthrough mode
+
+To rule the crop box out entirely and see the whole scene in `base_link`, use
+bounds larger than any real measurement and turn off the expensive stages:
+
+```bash
+ros2 launch suction_cup realsense_sphere.launch.py \
+  crop_min:="[-100.0, -100.0, -100.0]" \
+  crop_max:="[100.0, 100.0, 100.0]" \
+  outlier_neighbors:=0 \
+  voxel_leaf:=0.01
+```
+
+Every value needs an explicit decimal point; `-100` parses as an integer array
+and the node rejects it as the wrong parameter type.
+
+This is an alignment check, not a detection mode. With no crop, the highest point
+in the scene is the ceiling, the robot arm, or your own hand, so `sphere_apex`
+becomes meaningless. Use it to confirm the cloud lands in the right place in RViz
+against a known landmark such as the table surface, then restore a real crop box
+before running any sweep.
 
 Note: `ur_experiment.launch.py` is the older generic experiment launch file and does not include the ESP32 pressure or PWM nodes. For suction cup experiments, prefer `suction_experiment.launch.py`.
 
