@@ -48,6 +48,9 @@ class ApexListener:
     def __init__(self, node, topic="sphere_apex"):
         self.node = node
         self.samples = []
+        # Whatever frame the detector is publishing in; reported rather than
+        # assumed, since the detector's target_frame is a runtime parameter.
+        self.frame_id = "?"
         qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -57,6 +60,7 @@ class ApexListener:
         self.sub = node.create_subscription(PointStamped, topic, self.callback, qos)
 
     def callback(self, msg):
+        self.frame_id = msg.header.frame_id
         self.samples.append([msg.point.x, msg.point.y, msg.point.z])
 
     def wait_for_apex(self, num_samples=20, timeout_sec=20.0):
@@ -107,14 +111,17 @@ def main(args):
 
         print("Waiting for a settled sphere apex estimate...")
         apex = apex_listener.wait_for_apex(args.apex_samples, args.apex_timeout)
-        print("Sphere apex (base_link): x=%.5f y=%.5f z=%.5f" % tuple(apex))
+        apex_frame = apex_listener.frame_id
+        print("Sphere apex (%s): x=%.5f y=%.5f z=%.5f" % ((apex_frame,) + tuple(apex)))
 
         orientation_fixed = R.from_rotvec(ROTVEC_DEFAULT).as_quat()
 
         waypoints = []
         for dx, dy, dz in offsets:
             touch_xyz = apex + np.array([dx, dy, dz - args.press_depth])
-            if np.linalg.norm(touch_xyz - apex) > args.max_offset:
+            # Tolerance so a waypoint sitting exactly on the limit is not rejected
+            # by floating-point error in the norm.
+            if np.linalg.norm(touch_xyz - apex) > args.max_offset + 1e-9:
                 raise ValueError(
                     "Waypoint (%.3f, %.3f, %.3f) is %.3f m from the apex, beyond the "
                     "--max-offset safety limit of %.3f m."
@@ -122,7 +129,7 @@ def main(args):
                 )
             waypoints.append(touch_xyz)
 
-        print("Planned touch poses (base_link):")
+        print("Planned touch poses (%s):" % apex_frame)
         for offset, touch_xyz in zip(offsets, waypoints):
             print("  offset %s -> %s" % (np.array(offset), np.round(touch_xyz, 5)))
         if args.dry_run:

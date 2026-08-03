@@ -27,6 +27,9 @@ def voxel_downsample(points, leaf_size):
 
     keys = np.floor(points / leaf_size).astype(np.int64)
     _, inverse, counts = np.unique(keys, axis=0, return_inverse=True, return_counts=True)
+    # NumPy 2.0 returned a column vector here for axis=0; flatten so the
+    # scatter-add below indexes rows rather than broadcasting silently.
+    inverse = inverse.reshape(-1)
 
     sums = np.zeros((counts.shape[0], 3), dtype=np.float64)
     np.add.at(sums, inverse, points)
