@@ -42,6 +42,21 @@ def parse_offsets(text):
     return offsets
 
 
+def compass_offsets(radius):
+    """North/west/south/east waypoints at radius/2 from the apex, in the x-y plane.
+
+    North is +y and east is +x in the target frame, i.e. the compass is read
+    looking down at the sphere from above. dz is zero: every waypoint keeps the
+    apex height, which leaves the cup clear of the sphere since the surface
+    curves away below the apex.
+    """
+    step = radius / 2.0
+    return (
+        ["north", "west", "south", "east"],
+        [(0.0, step, 0.0), (-step, 0.0, 0.0), (0.0, -step, 0.0), (step, 0.0, 0.0)],
+    )
+
+
 class ApexListener:
     """Collects sphere_apex messages so the sweep can start from a settled estimate."""
 
@@ -89,7 +104,15 @@ def wait_for_data_logger(node, client):
 
 def main(args):
     np.set_printoptions(precision=4)
-    offsets = parse_offsets(args.offsets)
+    if args.radius > 0.0:
+        labels, offsets = compass_offsets(args.radius)
+        print(
+            "Sphere radius %.4f m -> four waypoints %.4f m from the apex (N, W, S, E). "
+            "--offsets is ignored." % (args.radius, args.radius / 2.0)
+        )
+    else:
+        offsets = parse_offsets(args.offsets)
+        labels = ["waypoint %d" % i for i in range(1, len(offsets) + 1)]
 
     rclpy.init()
     node = rclpy.create_node("sphere_sweep_experiment")
@@ -117,21 +140,22 @@ def main(args):
         orientation_fixed = R.from_rotvec(ROTVEC_DEFAULT).as_quat()
 
         waypoints = []
-        for dx, dy, dz in offsets:
+        for label, (dx, dy, dz) in zip(labels, offsets):
             touch_xyz = apex + np.array([dx, dy, dz - args.press_depth])
             # Tolerance so a waypoint sitting exactly on the limit is not rejected
             # by floating-point error in the norm.
             if np.linalg.norm(touch_xyz - apex) > args.max_offset + 1e-9:
                 raise ValueError(
-                    "Waypoint (%.3f, %.3f, %.3f) is %.3f m from the apex, beyond the "
-                    "--max-offset safety limit of %.3f m."
-                    % (dx, dy, dz, np.linalg.norm(touch_xyz - apex), args.max_offset)
+                    "Waypoint %s (%.3f, %.3f, %.3f) is %.3f m from the apex, beyond "
+                    "the --max-offset safety limit of %.3f m."
+                    % (label, dx, dy, dz, np.linalg.norm(touch_xyz - apex), args.max_offset)
                 )
             waypoints.append(touch_xyz)
 
         print("Planned touch poses (%s):" % apex_frame)
-        for offset, touch_xyz in zip(offsets, waypoints):
-            print("  offset %s -> %s" % (np.array(offset), np.round(touch_xyz, 5)))
+        for label, offset, touch_xyz in zip(labels, offsets, waypoints):
+            print("  %-6s offset %s -> %s"
+                  % (label, np.array(offset), np.round(touch_xyz, 5)))
         if args.dry_run:
             print("Dry run: no robot motion commanded.")
             return
@@ -149,11 +173,12 @@ def main(args):
         except Exception:
             print("set now as offset failed, but it is okay")
 
-        for touch_xyz in waypoints:
+        for label, touch_xyz in zip(labels, waypoints):
             hover_xyz = touch_xyz + np.array([0.0, 0.0, args.hover_height])
             hover = rtde_help.getPoseObj(list(hover_xyz), orientation_fixed)
             touch = rtde_help.getPoseObj(list(touch_xyz), orientation_fixed)
 
+            print("--- %s ---" % label)
             input("Press <Enter> to cycle to next hover pose")  # inputs handle timing
             rtde_help.goToPose(hover)
             input("Press <Enter> to cycle to next touch pose")
@@ -168,10 +193,13 @@ def main(args):
         call_enable_service(node, data_logger_client, False)
         time.sleep(0.2)
 
+        if args.radius > 0.0:
+            plan_txt = "radius_%s" % args.radius
+        else:
+            plan_txt = "offsets_%s" % args.offsets.replace(";", "__").replace(",", "_")
         file_help.saveDataParams(
             args,
-            appendTxt="Sphere_sweep_press_%s_offsets_%s"
-            % (args.press_depth, args.offsets.replace(";", "__").replace(",", "_")),
+            appendTxt="Sphere_sweep_press_%s_%s" % (args.press_depth, plan_txt),
         )
         file_help.clearTmpFolder()
         print("============ Sphere sweep complete!")
@@ -191,6 +219,14 @@ if __name__ == "__main__":
         default="-0.030,0,-0.004; 0,0,0; 0.030,0,-0.004",
         help="waypoints relative to the sphere apex as 'dx,dy,dz; dx,dy,dz' in meters "
         "(default: 30 mm left, apex, 30 mm right)",
+    )
+    parser.add_argument(
+        "--radius",
+        type=float,
+        default=0.0,
+        help="radius of curvature of the test sphere (m). When given, --offsets is "
+        "ignored and four waypoints are generated at radius/2 north, west, south "
+        "and east of the apex, all at the apex height",
     )
     parser.add_argument("--press-depth", type=float, default=0.0,
                         help="extra downward press applied to every touch pose (m)")
