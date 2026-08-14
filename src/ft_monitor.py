@@ -86,32 +86,37 @@ def wait_for_data(node, timeout_sec=10.0):
         time.sleep(0.1)
 
 
-def run_text(node, rate_hz):
+def run_text(node, args):
     """Terminal readout, for when there is no display available."""
-    period = 1.0 / rate_hz
-    print("Fx, Fy, Fz in N; p2p is the peak-to-peak of Fz over the window.")
+    period = 1.0 / args.rate
+    print("Forces in N; p2p is the peak-to-peak of |Fz| over the window.")
     while rclpy.ok():
-        t, forces, _ = node.snapshot()
+        _, forces, _ = node.snapshot()
         if forces.shape[0]:
-            fz = forces[:, 2]
+            abs_fz = np.abs(forces[:, 2])
             print(
-                "\rFx=%+7.3f  Fy=%+7.3f  Fz=%+7.3f   Fz p2p=%6.3f  N=%d   "
-                % (forces[-1, 0], forces[-1, 1], forces[-1, 2], fz.max() - fz.min(),
-                   forces.shape[0]),
+                "\rFx=%+7.3f  Fy=%+7.3f  |Fz|=%6.3f   |Fz| p2p=%6.3f  N=%d   "
+                % (forces[-1, 0], forces[-1, 1], abs_fz[-1],
+                   abs_fz.max() - abs_fz.min(), forces.shape[0]),
                 end="",
                 flush=True,
             )
         time.sleep(period)
 
 
-def run_plot(node, window_sec, force_limit, torque_limit):
+def run_plot(node, args):
+    window_sec = args.window
+    force_limit = args.force_limit
+    torque_limit = args.torque_limit
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation
 
     fig, (ax_f, ax_t) = plt.subplots(2, 1, sharex=True, figsize=(9, 7))
     fig.canvas.manager.set_window_title("ATI FT monitor - netft_data")
 
-    force_lines = [ax_f.plot([], [], label=name)[0] for name in ("Fx", "Fy", "Fz")]
+    # Fz is drawn as a magnitude: the descent only cares how hard the cup is
+    # loaded, not which way the sensor's z axis happens to point.
+    force_lines = [ax_f.plot([], [], label=name)[0] for name in ("Fx", "Fy", "|Fz|")]
     torque_lines = [ax_t.plot([], [], label=name)[0] for name in ("Tx", "Ty", "Tz")]
 
     ax_f.set_ylabel("force (N)")
@@ -121,6 +126,9 @@ def run_plot(node, window_sec, force_limit, torque_limit):
         ax.grid(True, alpha=0.3)
         ax.legend(loc="upper left")
         ax.axhline(0.0, color="k", lw=0.8, alpha=0.5)
+    ax_f.axhline(args.contact_force, color="r", lw=0.9, ls="--", alpha=0.7,
+                 label="contact %.2f N" % args.contact_force)
+    ax_f.legend(loc="upper left")
 
     readout = ax_f.text(
         0.99, 0.03, "", transform=ax_f.transAxes, ha="right", va="bottom",
@@ -139,23 +147,25 @@ def run_plot(node, window_sec, force_limit, torque_limit):
         if t.shape[0] == 0:
             return force_lines + torque_lines + [readout]
 
+        plotted = forces.copy()
+        plotted[:, 2] = np.abs(plotted[:, 2])
         for i, line in enumerate(force_lines):
-            line.set_data(t, forces[:, i])
+            line.set_data(t, plotted[:, i])
         for i, line in enumerate(torque_lines):
             line.set_data(t, torques[:, i])
 
         ax_f.set_xlim(max(0.0, t[-1] - window_sec), max(window_sec, t[-1]))
         # Autoscale to the data but never below the limit floor, so small noise
         # is not blown up to look like a large signal.
-        f_span = max(force_limit, np.abs(forces).max() * 1.2)
+        f_span = max(force_limit, np.abs(plotted).max() * 1.2)
         t_span = max(torque_limit, np.abs(torques).max() * 1.2)
         ax_f.set_ylim(-f_span, f_span)
         ax_t.set_ylim(-t_span, t_span)
 
-        fz = forces[:, 2]
+        abs_fz = plotted[:, 2]
         readout.set_text(
-            "Fz = %+7.3f N\nFz p2p = %6.3f N   (over %.0f s)\nrate = %5.1f Hz"
-            % (fz[-1], fz.max() - fz.min(), window_sec,
+            "|Fz| = %6.3f N\n|Fz| p2p = %6.3f N   (over %.0f s)\nrate = %5.1f Hz"
+            % (abs_fz[-1], abs_fz.max() - abs_fz.min(), window_sec,
                t.shape[0] / max(t[-1] - t[0], 1e-6))
         )
         return force_lines + torque_lines + [readout]
@@ -174,11 +184,15 @@ def main(args):
     spinner.start()
     try:
         wait_for_data(node, args.timeout)
-        print("Receiving /netft_data.")
+        # Let a little history accumulate so the auto-zero averages over real
+        # noise rather than a single sample, then zero without being asked.
+        time.sleep(args.zero_delay)
+        node.zero()
+        print("Receiving /netft_data. Auto-zeroed; press 'b' to re-zero.")
         if args.no_plot:
-            run_text(node, args.rate)
+            run_text(node, args)
         else:
-            run_plot(node, args.window, args.force_limit, args.torque_limit)
+            run_plot(node, args)
     except KeyboardInterrupt:
         pass
     finally:
@@ -202,4 +216,8 @@ if __name__ == "__main__":
                         help="terminal refresh rate in --no-plot mode (Hz)")
     parser.add_argument("--timeout", type=float, default=10.0,
                         help="seconds to wait for the first message")
+    parser.add_argument("--zero-delay", type=float, default=1.0,
+                        help="seconds of data collected before the startup auto-zero")
+    parser.add_argument("--contact-force", type=float, default=0.3,
+                        help="contact threshold drawn on the plot (N)")
     main(parser.parse_args())

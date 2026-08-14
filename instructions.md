@@ -28,21 +28,49 @@ RViz setup: Fixed Frame `base_link`, Add → By topic → `/filtered_points`. Si
 T4 logs `filtered_points: N points in base_link` every 5 seconds when it is
 working. Silence means no cloud is arriving; a repeating warning means TF.
 
-### Height filtering
+### Crop box
 
-The crop box defaults leave x and y unbounded (`±100 m`) and filter on height
-alone, because the sphere apex is the topmost point in the scene. Only `crop_max`'s
-z normally needs tuning:
+Bench-tuned values are baked into the node defaults, so T4 needs no `--ros-args`:
+
+| param | value | why |
+|---|---|---|
+| `target_frame` | `base` | what RTDE expects, see below |
+| `crop_min` | `[-100.0, -0.15, 0.0]` | x unbounded, y trimmed to the table, z at the table surface |
+| `crop_max` | `[100.0, 0.08, 0.08]` | z ceiling just under the arm |
+
+To override, every value needs an explicit decimal point — `-100` parses as an
+integer array and the node rejects it as the wrong parameter type:
 
 ```bash
 ros2 run suction_cup realsense_sphere_detector.py --ros-args \
-  -p crop_min:="[-100.0, -100.0, 0.0]" -p crop_max:="[100.0, 100.0, 0.25]"
+  -p crop_min:="[-100.0, -0.15, 0.0]" -p crop_max:="[100.0, 0.08, 0.08]"
 ```
 
-Set that upper z snugly above the sphere. With it too high, the robot arm is the
-highest thing in the cloud and the apex silently jumps to the arm — the topic keeps
-publishing plausible-looking numbers, so watch `/sphere_apex` in RViz rather than
-trusting it.
+`crop_max`'s z is the one that matters. Set it snugly above the sphere. Too high
+and the robot arm becomes the highest thing in the cloud, so the apex silently
+jumps to the arm — the topic keeps publishing plausible-looking numbers, so watch
+`/sphere_apex` in RViz rather than trusting it. The same trap applies to the y
+band: if it ever clips the top of the sphere, the detector reports the highest
+surviving point instead of failing.
+
+### `base`, not `base_link`
+
+`target_frame` must be `base`. RTDE never reads TF — `rtde_helper.goToPose` sends
+coordinates straight to the UR controller, which works in its own `base` frame.
+ROS's `base_link` follows the ROS-Industrial convention and is rotated 180° about
+Z from it, so `(x, y)` becomes `(−x, −y)` and the arm drives to the mirrored point
+on the far side of the workspace.
+
+Both frames exist in TF and both render fine in RViz, which is why this is easy to
+miss. The check is to compare a printed apex against the known-good hardcoded
+waypoints in `src/simple_experiment_force.py` (x ≈ 0.53–0.59, y ≈ −0.14). An apex
+of the right magnitude with both signs flipped means the wrong frame.
+
+```bash
+ros2 run tf2_ros tf2_echo base base_link   # expect ~zero translation, RPY [0, 0, 3.142]
+```
+
+In RViz set Fixed Frame to `base` to match.
 
 `/sphere_apex` is a `geometry_msgs/PointStamped`: a position only. The tool
 rotation belongs to the experiment, which applies its own `ROTVEC_DEFAULT`.

@@ -59,15 +59,21 @@ class RealSenseSphereDetector(Node):
         self.declare_parameter("apex_topic", "sphere_apex")
         # Frame the cloud is transformed into before filtering. Everything below
         # (crop box, "highest point") is expressed in this frame.
-        self.declare_parameter("target_frame", "base_link")
-        # Workspace crop box in target_frame, in meters. Defaults leave x and y
-        # unbounded and filter on height alone: the sphere apex is the topmost
-        # point in the scene, so only z needs constraining. Keep z_max snug above
-        # the sphere or the robot arm becomes the highest thing in the cloud.
-        # z_min is below the base origin because the table sits lower than the
-        # robot base; z_max only needs to sit above the sphere and below the arm.
-        self.declare_parameter("crop_min", [-100.0, -100.0, -1.0])
-        self.declare_parameter("crop_max", [100.0, 100.0, 1.0])
+        #
+        # "base", not ROS's "base_link": the apex is consumed by rtde_helper,
+        # which sends poses to the UR controller, and the controller works in
+        # "base". The two differ by 180 deg about Z, so publishing in base_link
+        # sends the arm to the mirrored point on the far side of the workspace.
+        self.declare_parameter("target_frame", "base")
+        # Workspace crop box in target_frame, in meters. These are the values
+        # found by hand on the bench: x unbounded, y trimmed to the table around
+        # the sphere, z from the table surface up to just under the arm.
+        #
+        # z_max is the one that matters. Keep it snug above the sphere - set it
+        # too high and the robot arm becomes the highest thing in the cloud, and
+        # the apex silently jumps to the arm while still looking plausible.
+        self.declare_parameter("crop_min", [-100.0, -0.15, 0.0])
+        self.declare_parameter("crop_max", [100.0, 0.08, 0.08])
         self.declare_parameter("voxel_leaf", 0.002)
         self.declare_parameter("outlier_neighbors", 12)
         self.declare_parameter("outlier_std_ratio", 1.0)
