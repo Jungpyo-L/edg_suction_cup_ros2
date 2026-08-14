@@ -27,6 +27,12 @@ from scipy.spatial.transform import Rotation as R
 # Fixed tool rotation for the whole sweep, same value used by simple_experiment.py.
 ROTVEC_DEFAULT = [2.263, -2.179, 0.000]  # rad
 
+# Parked pose the arm returns to when the sweep finishes, recorded from the
+# robot in base. Its orientation is within 0.4 deg of ROTVEC_DEFAULT, so the
+# return is effectively a pure translation.
+HOME_POSITION = [0.558369, -0.051576, 0.404641]
+HOME_QUAT = [-0.722349, 0.691528, 0.000403, 0.001165]
+
 # Cap on retained apex samples. The listener keeps receiving for the whole run,
 # since read_avg_fz spins the node on every descent step, so an unbounded list
 # would grow for as long as the experiment lasts.
@@ -235,10 +241,23 @@ def validate_args(args):
         "--hover-height": args.hover_height,
         "--dwell": args.dwell,
         "--settle": args.settle,
+        "--travel-height": args.travel_height,
     }
     for name, value in non_negative.items():
         if value < 0:
             raise ValueError("%s cannot be negative, got %s" % (name, value))
+
+    # The travel plane has to clear whatever the waypoints themselves sit at, or
+    # "lifting" to it would drive the tool down into the sphere.
+    lowest_clearance = args.standoff if args.mode == "offset" else args.hover_height
+    if args.travel_height <= lowest_clearance:
+        raise ValueError(
+            "--travel-height (%.3f m) must exceed %s (%.3f m), otherwise moving to "
+            "the travel plane lowers the tool instead of raising it."
+            % (args.travel_height,
+               "--standoff" if args.mode == "offset" else "--hover-height",
+               lowest_clearance)
+        )
 
     if args.force_ceiling <= args.contact_force:
         raise ValueError(
@@ -359,12 +378,26 @@ def main(args):
         except Exception:
             print("set now as offset failed, but it is okay")
 
+        # One plane above the sphere that every lateral move happens in, so the
+        # tool never traverses near the surface. Fixed relative to the apex
+        # rather than to each waypoint, so it clears the sphere's top too.
+        travel_z = apex[2] + args.travel_height
+        print("Travel plane at z=%.5f (%.1f mm above the apex)."
+              % (travel_z, args.travel_height * 1e3))
+
         for label, touch_xyz in zip(labels, waypoints):
             hover_xyz = touch_xyz + np.array([0.0, 0.0, args.hover_height])
             hover = rtde_help.getPoseObj(list(hover_xyz), orientation_fixed)
+            travel = rtde_help.getPoseObj(
+                [touch_xyz[0], touch_xyz[1], travel_z], orientation_fixed
+            )
 
             print("--- %s ---" % label)
             input("Press <Enter> to cycle to next hover pose")  # inputs handle timing
+            # Cross to this waypoint in the travel plane first, then come
+            # straight down. The previous waypoint left the tool up here, so
+            # this move is lateral only.
+            rtde_help.goToPose(travel)
             rtde_help.goToPose(hover)
 
             if offset_mode:
@@ -391,12 +424,19 @@ def main(args):
                          fz_final, touch_xyz[2]))
 
             time.sleep(args.dwell)
-            if args.retract:
-                rtde_help.goToPose(hover)
-                time.sleep(0.1)
+            # Lift straight back to the travel plane before the next waypoint,
+            # so the cup is never in contact while moving laterally.
+            rtde_help.goToPose(travel)
+            time.sleep(0.1)
 
         call_enable_service(node, data_logger_client, False)
         time.sleep(0.2)
+
+        if not args.no_home:
+            # Safe as a single move: the last waypoint left the tool in the
+            # travel plane, and home is well above it.
+            print("Returning to the parked pose %s." % np.round(HOME_POSITION, 4))
+            rtde_help.goToPose(rtde_help.getPoseObj(HOME_POSITION, HOME_QUAT))
 
         if args.radius > 0.0:
             plan_txt = "radius_%s" % args.radius
@@ -435,10 +475,18 @@ if __name__ == "__main__":
     )
     parser.add_argument("--hover-height", type=float, default=0.005,
                         help="hover height above each touch pose (m)")
-    parser.add_argument("--dwell", type=float, default=0.5,
-                        help="seconds to hold at each touch pose")
-    parser.add_argument("--retract", action="store_true",
-                        help="return to the hover pose after each touch")
+    parser.add_argument("--dwell", type=float, default=1.0,
+                        help="seconds to hold at each touch pose while the seal "
+                        "settles and the pressure plateaus")
+    parser.add_argument("--no-home", action="store_true",
+                        help="stay at the travel plane instead of returning to "
+                        "the parked pose when the sweep finishes")
+    # 80 mm rather than something tighter because the clearance that matters is
+    # at the cup lip, which sits below the TCP by the whole tool length.
+    parser.add_argument("--travel-height", type=float, default=0.080,
+                        help="height above the apex of the plane used for all "
+                        "lateral moves between waypoints, and the height lifted "
+                        "to after each probe (m)")
     parser.add_argument(
         "--mode",
         choices=["offset", "force"],
@@ -450,7 +498,9 @@ if __name__ == "__main__":
     )
     parser.add_argument("--standoff", type=float, default=0.010,
                         help="height above the apex plane held in offset mode (m)")
-    parser.add_argument("--contact-force", type=float, default=0.3,
+    # 0.2 N is about 3x the idle noise measured on this Axia80 (0.063 N
+    # peak-to-peak worst case over a minute, usually lower).
+    parser.add_argument("--contact-force", type=float, default=0.2,
                         help="|Fz| that counts as first contact (N)")
     parser.add_argument("--preload-depth", type=float, default=0.003,
                         help="distance to descend past first contact (m)")

@@ -2,3 +2,4 @@
 /SensorCallback
 /endEffectorPose
 /sync
+/netft_data
