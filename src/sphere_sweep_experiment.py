@@ -43,7 +43,7 @@ def parse_offsets(text):
 
 
 def compass_offsets(radius):
-    """North/west/south/east waypoints at radius/2 from the apex, in the x-y plane.
+    """The apex itself plus north/west/south/east waypoints at radius/2 from it.
 
     North is +y and east is +x in the target frame, i.e. the compass is read
     looking down at the sphere from above. dz is zero: every waypoint keeps the
@@ -52,8 +52,14 @@ def compass_offsets(radius):
     """
     step = radius / 2.0
     return (
-        ["north", "west", "south", "east"],
-        [(0.0, step, 0.0), (-step, 0.0, 0.0), (0.0, -step, 0.0), (step, 0.0, 0.0)],
+        ["center", "north", "west", "south", "east"],
+        [
+            (0.0, 0.0, 0.0),
+            (0.0, step, 0.0),
+            (-step, 0.0, 0.0),
+            (0.0, -step, 0.0),
+            (step, 0.0, 0.0),
+        ],
     )
 
 
@@ -107,8 +113,8 @@ def main(args):
     if args.radius > 0.0:
         labels, offsets = compass_offsets(args.radius)
         print(
-            "Sphere radius %.4f m -> four waypoints %.4f m from the apex (N, W, S, E). "
-            "--offsets is ignored." % (args.radius, args.radius / 2.0)
+            "Sphere radius %.4f m -> five waypoints: the apex, then %.4f m N, W, S, E "
+            "of it. --offsets is ignored." % (args.radius, args.radius / 2.0)
         )
     else:
         offsets = parse_offsets(args.offsets)
@@ -225,8 +231,8 @@ if __name__ == "__main__":
         type=float,
         default=0.0,
         help="radius of curvature of the test sphere (m). When given, --offsets is "
-        "ignored and four waypoints are generated at radius/2 north, west, south "
-        "and east of the apex, all at the apex height",
+        "ignored and five waypoints are generated: the apex itself, then radius/2 "
+        "north, west, south and east of it, all at the apex height",
     )
     parser.add_argument("--press-depth", type=float, default=0.0,
                         help="extra downward press applied to every touch pose (m)")
