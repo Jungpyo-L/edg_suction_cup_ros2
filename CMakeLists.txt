@@ -20,6 +20,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   src/Demo_Lateral_positioning_air.py
   src/ESP32_PWM.py
   src/ESP32_Pressure.py
+  src/ft_monitor.py
   src/realsense_sphere_detector.py
   src/robotStatePublisher.py
   src/sphere_sweep_experiment.py
