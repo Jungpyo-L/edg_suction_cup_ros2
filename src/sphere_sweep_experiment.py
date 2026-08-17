@@ -33,6 +33,26 @@ ROTVEC_DEFAULT = [2.263, -2.179, 0.000]  # rad
 HOME_POSITION = [0.558369, -0.051576, 0.404641]
 HOME_QUAT = [-0.722349, 0.691528, 0.000403, 0.001165]
 
+# Phase codes published on /sync so the continuous logs can be cut into phases
+# afterwards. The published value is waypoint_index * 10 + event, so a reader
+# recovers both with divmod(code, 10): code 21 is waypoint 2, event 1.
+#
+# Event 0 means the tool is travelling and the sample should be ignored. The
+# others bound the phases of one probe. Int8 caps the value at 127, hence the
+# waypoint limit in validate_args.
+EVENT_TRAVEL = 0
+EVENT_DESCEND = 1
+EVENT_CONTACT = 2
+EVENT_PRELOAD = 3
+EVENT_DWELL_END = 4
+# Emitted once per completed step, so every step boundary is its own row in the
+# sync log. The code repeats rather than counting: the step index is the row's
+# position within the waypoint, which keeps the value inside Int8 no matter how
+# many steps a descent takes.
+EVENT_DESCEND_STEP = 5
+EVENT_PRELOAD_STEP = 6
+MAX_WAYPOINTS = 12
+
 # Cap on retained apex samples. The listener keeps receiving for the whole run,
 # since read_avg_fz spins the node on every descent step, so an unbounded list
 # would grow for as long as the experiment lasts.
@@ -159,7 +179,8 @@ def bias_ft_sensor(node, ft_help, n_spins=60, timeout_sec=0.05):
     ft_help.setNowAsBias()
 
 
-def descend_to_contact(node, rtde_help, ft_help, xy, z_start, orientation, args):
+def descend_to_contact(node, rtde_help, ft_help, xy, z_start, orientation, args,
+                       on_event=None):
     """Step down from z_start until |Fz| crosses the contact threshold, then a
     further preload_depth. Returns (z_contact, z_final, fz_final)."""
     x, y = xy
@@ -182,6 +203,8 @@ def descend_to_contact(node, rtde_help, ft_help, xy, z_start, orientation, args)
             break
         z -= args.descend_step
         fz = move_to(z)
+        if on_event is not None:
+            on_event(EVENT_DESCEND_STEP)
     # The loop re-tests its distance bound before its force check, so a contact
     # made on the very last step would otherwise be thrown away.
     if z_contact is None and fz >= args.contact_force:
@@ -193,6 +216,10 @@ def descend_to_contact(node, rtde_help, ft_help, xy, z_start, orientation, args)
             "wrong, or the threshold is below the sensor noise floor."
             % (args.max_search * 1e3, args.contact_force, fz, z)
         )
+    # Marked here rather than re-derived in analysis, so the recorded instant is
+    # the one the robot actually acted on.
+    if on_event is not None:
+        on_event(EVENT_CONTACT)
     node.get_logger().info("contact at z=%.4f m, |Fz|=%.2f N" % (z_contact, fz))
 
     # Preload past contact. Stepped rather than a single move so the force
@@ -201,6 +228,8 @@ def descend_to_contact(node, rtde_help, ft_help, xy, z_start, orientation, args)
     while z > target + 1e-9:
         z = max(target, z - args.descend_step)
         fz = move_to(z)
+        if on_event is not None:
+            on_event(EVENT_PRELOAD_STEP)
         if fz >= args.force_ceiling:
             node.get_logger().warn(
                 "Force ceiling %.1f N reached at z=%.4f m, %.1f mm into a %.1f mm "
@@ -209,6 +238,8 @@ def descend_to_contact(node, rtde_help, ft_help, xy, z_start, orientation, args)
                    args.preload_depth * 1e3)
             )
             break
+    if on_event is not None:
+        on_event(EVENT_PRELOAD)
     return z_contact, z, fz
 
 
@@ -264,6 +295,12 @@ def validate_args(args):
             "--force-ceiling (%.2f N) must exceed --contact-force (%.2f N), or the "
             "preload aborts on the same reading that triggered contact."
             % (args.force_ceiling, args.contact_force)
+        )
+    count = 5 if args.radius > 0.0 else len(parse_offsets(args.offsets))
+    if count > MAX_WAYPOINTS:
+        raise ValueError(
+            "%d waypoints exceeds the %d that fit in the Int8 /sync phase code "
+            "(waypoint * 10 + event)." % (count, MAX_WAYPOINTS)
         )
     if args.apex_samples > APEX_BUFFER:
         raise ValueError(
@@ -385,7 +422,18 @@ def main(args):
         print("Travel plane at z=%.5f (%.1f mm above the apex)."
               % (travel_z, args.travel_height * 1e3))
 
-        for label, touch_xyz in zip(labels, waypoints):
+        def gate(prompt):
+            """Wait for <Enter>, or just announce the step when unattended."""
+            if args.unattended:
+                print("%s [unattended]" % prompt)
+                return
+            input(prompt)
+
+        def publish_event(index, event):
+            sync_pub.publish(Int8(data=index * 10 + event))
+            rclpy.spin_once(node, timeout_sec=0.0)
+
+        for index, (label, touch_xyz) in enumerate(zip(labels, waypoints), start=1):
             hover_xyz = touch_xyz + np.array([0.0, 0.0, args.hover_height])
             hover = rtde_help.getPoseObj(list(hover_xyz), orientation_fixed)
             travel = rtde_help.getPoseObj(
@@ -393,17 +441,17 @@ def main(args):
             )
 
             print("--- %s ---" % label)
-            input("Press <Enter> to cycle to next hover pose")  # inputs handle timing
+            gate("Press <Enter> to cycle to next hover pose")  # gates handle timing
             # Cross to this waypoint in the travel plane first, then come
             # straight down. The previous waypoint left the tool up here, so
             # this move is lateral only.
+            publish_event(index, EVENT_TRAVEL)
             rtde_help.goToPose(travel)
             rtde_help.goToPose(hover)
 
             if offset_mode:
-                input("Press <Enter> to cycle to next touch pose")
-                sync_pub.publish(Int8(data=1))
-                rclpy.spin_once(node, timeout_sec=0.0)
+                gate("Press <Enter> to cycle to next touch pose")
+                publish_event(index, EVENT_DESCEND)
                 rtde_help.goToPose(
                     rtde_help.getPoseObj(list(touch_xyz), orientation_fixed)
                 )
@@ -411,12 +459,12 @@ def main(args):
                 # Bias while clear of the surface so the descent stops on real
                 # contact rather than on any resting sensor offset.
                 bias_ft_sensor(node, ft_help)
-                input("Press <Enter> to descend to contact")
-                sync_pub.publish(Int8(data=1))
-                rclpy.spin_once(node, timeout_sec=0.0)
+                gate("Press <Enter> to descend to contact")
+                publish_event(index, EVENT_DESCEND)
                 z_contact, z_final, fz_final = descend_to_contact(
                     node, rtde_help, ft_help, (touch_xyz[0], touch_xyz[1]),
                     hover_xyz[2], orientation_fixed, args,
+                    on_event=lambda event, i=index: publish_event(i, event),
                 )
                 print("  %-6s contact z=%.5f, final z=%.5f (%.1f mm preload), "
                       "|Fz|=%.2f N, vision predicted z=%.5f"
@@ -424,6 +472,7 @@ def main(args):
                          fz_final, touch_xyz[2]))
 
             time.sleep(args.dwell)
+            publish_event(index, EVENT_DWELL_END)
             # Lift straight back to the travel plane before the next waypoint,
             # so the cup is never in contact while moving laterally.
             rtde_help.goToPose(travel)
@@ -478,6 +527,9 @@ if __name__ == "__main__":
     parser.add_argument("--dwell", type=float, default=1.0,
                         help="seconds to hold at each touch pose while the seal "
                         "settles and the pressure plateaus")
+    parser.add_argument("--unattended", action="store_true",
+                        help="do not wait for <Enter> between moves, so a run can "
+                        "proceed without someone at the keyboard")
     parser.add_argument("--no-home", action="store_true",
                         help="stay at the travel plane instead of returning to "
                         "the parked pose when the sweep finishes")
