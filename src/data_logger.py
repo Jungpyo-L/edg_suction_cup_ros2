@@ -44,9 +44,10 @@ class DataLogger(Node):
         line = f"{timestamp.sec}.{timestamp.nanosec:09d},"
         for attribute_name in list(self.attributes_by_topic[topic].keys()):
             value = data_by_attribute[attribute_name]
-            value_str = str(value)
             if self.attributes_by_topic[topic][attribute_name] > 1:
-                value_str = value_str[1:-1]
+                value_str = ",".join(str(item) for item in value)
+            else:
+                value_str = str(value)
             line += value_str + ","
 
         self.output_file[topic].write(line[:-1] + "\n")
@@ -61,7 +62,7 @@ class DataLogger(Node):
         elif isinstance(msg, numbers.Number):
             self.attributes_by_topic.setdefault(topic, {})
             self.attributes_by_topic[topic][attribute_name[1:]] = 1
-        elif isinstance(msg, (list, tuple)) and msg and isinstance(msg[0], numbers.Number):
+        elif hasattr(msg, "__len__") and len(msg) and isinstance(msg[0], numbers.Number):
             self.attributes_by_topic.setdefault(topic, {})
             self.attributes_by_topic[topic][attribute_name[1:]] = len(msg)
 

@@ -71,7 +71,7 @@ def pressure_columns(frame, channels):
     """Columns holding the per-chamber values, in channel order."""
     found = []
     for column in frame.columns:
-        match = re.search(r"\.data\[(\d+)\]$", column)
+        match = re.search(r"\.?_?data\[(\d+)\]$", column)
         if match and (channels is None or int(match.group(1)) in channels):
             found.append((int(match.group(1)), column))
     if not found:
@@ -88,7 +88,7 @@ def tag(frame, sync):
     The code is a step function, only changing when the experiment publishes, so
     a backward as-of join reproduces it exactly on any sampling rate.
     """
-    code_column = [c for c in sync.columns if c.endswith(".data")][0]
+    code_column = [c for c in sync.columns if c.endswith(".data") or c.endswith("._data")][0]
     codes = sync[["t", code_column]].rename(columns={code_column: "code"})
     merged = pd.merge_asof(frame, codes, on="t", direction="backward")
     merged["code"] = merged["code"].fillna(-1).astype(int)
@@ -230,7 +230,7 @@ def main(args):
     if sync is None:
         raise SystemExit("No sync data in run %s - nothing to label with." % key)
 
-    code_column = [c for c in sync.columns if c.endswith(".data")][0]
+    code_column = [c for c in sync.columns if c.endswith(".data") or c.endswith("._data")][0]
     columns = pressure_columns(pressure, args.channels)
     print("Plotting %d chambers: %s" % (len(columns), columns))
 
