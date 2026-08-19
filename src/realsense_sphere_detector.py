@@ -51,7 +51,7 @@ def remove_statistical_outliers(points, num_neighbors, std_ratio):
 
 
 class RealSenseSphereDetector(Node):
-    def __init__(self):
+    def __init__(self, sphere_radius=None):
         super().__init__("realsense_sphere_detector")
 
         self.declare_parameter("input_topic", "/camera/camera/depth/color/points")
@@ -84,6 +84,16 @@ class RealSenseSphereDetector(Node):
         # Number of frames the apex is median-filtered over before publishing.
         self.declare_parameter("apex_history", 15)
         self.declare_parameter("min_points", 50)
+        # Radius of the sphere being probed, in meters. When greater than zero
+        # the apex comes from a least-squares fit of a sphere of this radius
+        # instead of the top-band centroid. Set it to the same value passed as
+        # --radius to the sweep. Zero keeps the old behavior.
+        self.declare_parameter("sphere_radius", 0.0)
+        self.declare_parameter("min_fit_points", 100)
+        self.declare_parameter("fit_iterations", 20)
+        self.declare_parameter("fit_tolerance", 1e-6)
+        # Fit residual above which the cloud is judged not to be this sphere.
+        self.declare_parameter("max_fit_rms", 0.005)
 
         self.target_frame = self.get_parameter("target_frame").value
         self.crop_min = np.asarray(self.get_parameter("crop_min").value, dtype=np.float64)
@@ -94,6 +104,16 @@ class RealSenseSphereDetector(Node):
         self.apex_band = float(self.get_parameter("apex_band").value)
         self.min_apex_points = int(self.get_parameter("min_apex_points").value)
         self.min_points = int(self.get_parameter("min_points").value)
+        # --sphere-radius on the command line wins over the ROS parameter, so the
+        # radius can be given the same way the sweep takes it.
+        self.sphere_radius = (
+            float(sphere_radius) if sphere_radius is not None
+            else float(self.get_parameter("sphere_radius").value)
+        )
+        self.min_fit_points = int(self.get_parameter("min_fit_points").value)
+        self.fit_iterations = int(self.get_parameter("fit_iterations").value)
+        self.fit_tolerance = float(self.get_parameter("fit_tolerance").value)
+        self.max_fit_rms = float(self.get_parameter("max_fit_rms").value)
 
         self.apex_history = deque(maxlen=int(self.get_parameter("apex_history").value))
 
@@ -213,6 +233,21 @@ class RealSenseSphereDetector(Node):
         self.apex_pub.publish(apex_msg)
 
     def estimate_apex(self, points):
+        """Apex of the sphere, by fit when a radius is known and by band otherwise."""
+        if self.sphere_radius > 0.0:
+            apex = self.estimate_apex_by_fit(points)
+            if apex is not None:
+                return apex
+            # Fall through to the band method rather than dropping the frame, so
+            # a fit that fails on one bad frame does not stall the topic.
+            self.get_logger().warn(
+                "Sphere fit did not converge; falling back to the top-band "
+                "centroid for this frame.",
+                throttle_duration_sec=5.0,
+            )
+        return self.estimate_apex_by_band(points)
+
+    def estimate_apex_by_band(self, points):
         """Centroid of the points sitting in the top apex_band of the cloud."""
         z_max = points[:, 2].max()
         top = points[points[:, 2] >= z_max - self.apex_band]
@@ -225,14 +260,82 @@ class RealSenseSphereDetector(Node):
         apex[2] = z_max
         return apex
 
+    def estimate_apex_by_fit(self, points):
+        """Fit a sphere of known radius to the surface, then take its top.
+
+        Better conditioned than the band centroid, which averages over a cap
+        nearly 24 mm across on a 25 mm sphere and therefore drifts with the
+        camera's asymmetric view of it. Here every surface point constrains the
+        centre, and fixing the radius means one-sided coverage still pins it
+        down. It also removes the upward bias of taking a maximum of noisy z.
+        """
+        if points.shape[0] < self.min_fit_points:
+            return None
+
+        radius = self.sphere_radius
+        # Start from the band estimate's centre, one radius below the top.
+        seed = self.estimate_apex_by_band(points)
+        if seed is None:
+            return None
+        centre = np.array([seed[0], seed[1], seed[2] - radius], dtype=np.float64)
+
+        for _ in range(self.fit_iterations):
+            offsets = points - centre
+            distances = np.linalg.norm(offsets, axis=1)
+            # A point exactly at the centre has no defined direction; drop it.
+            valid = distances > 1e-9
+            if valid.sum() < self.min_fit_points:
+                return None
+            offsets = offsets[valid]
+            distances = distances[valid]
+
+            # Gauss-Newton on residual r_i = |p_i - c| - R. The Jacobian row is
+            # the unit vector from the point to the centre.
+            residuals = distances - radius
+            jacobian = -offsets / distances[:, None]
+            step, *_ = np.linalg.lstsq(jacobian, -residuals, rcond=None)
+            centre = centre + step
+            if np.linalg.norm(step) < self.fit_tolerance:
+                break
+        else:
+            return None
+
+        # Reject a fit the data does not actually support: a cloud that is not a
+        # sphere of this radius will converge somewhere with a large residual.
+        rms = float(np.sqrt(np.mean(
+            (np.linalg.norm(points - centre, axis=1) - radius) ** 2
+        )))
+        if rms > self.max_fit_rms:
+            self.get_logger().warn(
+                "Sphere fit RMS %.4f m exceeds max_fit_rms %.4f; is sphere_radius "
+                "correct and the crop box clean?" % (rms, self.max_fit_rms),
+                throttle_duration_sec=5.0,
+            )
+            return None
+
+        self.get_logger().info(
+            "sphere fit: centre %s, RMS %.4f m over %d points"
+            % (np.round(centre, 4), rms, points.shape[0]),
+            throttle_duration_sec=5.0,
+        )
+        return np.array([centre[0], centre[1], centre[2] + radius])
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ros-args", nargs="*", help=argparse.SUPPRESS)
-    parser.parse_known_args()
+    parser.add_argument(
+        "--sphere-radius",
+        type=float,
+        default=None,
+        help="radius of the sphere being probed (m). Given, the apex comes from "
+        "a least-squares sphere fit instead of the top-band centroid. Pass the "
+        "same value used for the sweep's --radius",
+    )
+    args, _ = parser.parse_known_args()
 
     rclpy.init()
-    node = RealSenseSphereDetector()
+    node = RealSenseSphereDetector(sphere_radius=args.sphere_radius)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

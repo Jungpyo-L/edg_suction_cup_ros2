@@ -16,6 +16,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
   install(PROGRAMS
   src/adaptive_robot_control.py
+  src/curve_sweep_experiment.py
   src/data_logger.py
   src/Demo_Lateral_positioning_air.py
   src/ESP32_PWM.py
