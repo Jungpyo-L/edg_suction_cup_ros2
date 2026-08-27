@@ -40,6 +40,11 @@ HOME_QUAT = [-0.722349, 0.691528, 0.000403, 0.001165]
 # Under ~/.ros rather than beside the results, because it describes the camera
 # setup rather than any one experiment, and it should survive clearing results.
 APEX_OFFSET_FILE = os.path.expanduser("~/.ros/suction_cup_apex_offset.txt")
+# The accepted apex itself, in absolute coordinates. Kept separately from the
+# offset because the two answer different questions: the offset corrects a
+# camera that is working, this records where the sphere is when there is no
+# camera in the loop at all.
+APEX_FILE = os.path.expanduser("~/.ros/suction_cup_apex.txt")
 
 
 def write_apex_offset(offset):
@@ -52,6 +57,29 @@ def write_apex_offset(offset):
         print("Saved to %s. Reuse it with --apex-offset last." % APEX_OFFSET_FILE)
     except OSError as exc:
         print("Could not save the offset (%s). Pass it by hand next time." % exc)
+
+
+def write_apex(apex):
+    """Record the accepted apex so --apex last can replay it."""
+    try:
+        os.makedirs(os.path.dirname(APEX_FILE), exist_ok=True)
+        with open(APEX_FILE, "w") as handle:
+            handle.write("%.6f,%.6f,%.6f" % tuple(apex))
+        print("Apex saved to %s. Reuse it with --apex last." % APEX_FILE)
+    except OSError as exc:
+        print("Could not save the apex (%s). Copy it by hand." % exc)
+
+
+def read_apex():
+    """The apex written by the last accepted jog."""
+    try:
+        with open(APEX_FILE) as handle:
+            return handle.read().strip()
+    except OSError as exc:
+        raise RuntimeError(
+            "--apex last, but no saved apex in %s (%s). Run once with an "
+            "explicit --apex x,y,z and --jog-apex first." % (APEX_FILE, exc)
+        )
 
 
 def read_apex_offset():
@@ -151,8 +179,8 @@ def jog_to_apex(rtde_help, apex, orientation, args):
         moved = target + np.asarray(direction) * step
         lateral = float(np.linalg.norm((moved - start)[:2]))
         if lateral > args.max_offset:
-            print("  refusing to jog more than %.0f mm sideways from the vision "
-                  "estimate; it is %.0f mm out already."
+            print("  refusing to jog more than %.0f mm sideways from the "
+                  "starting apex; it is %.0f mm out already. Raise --max-offset."
                   % (args.max_offset * 1e3, lateral * 1e3))
             continue
 
@@ -549,7 +577,11 @@ def main(args):
             # a smooth, glossy, dark sphere gives the stereo matcher nothing to
             # match, and the IR projector reflects off it rather than scattering
             # back - so the detector never sees them however the crop is set.
-            apex = np.asarray(parse_offsets(args.apex)[0], dtype=float)
+            apex_text = args.apex.strip()
+            if apex_text == "last":
+                apex_text = read_apex()
+                print("Loaded saved apex %s from %s" % (apex_text, APEX_FILE))
+            apex = np.asarray(parse_offsets(apex_text)[0], dtype=float)
             apex_frame = "manual"
             print("Using the apex given on the command line: x=%.5f y=%.5f z=%.5f"
                   % tuple(apex))
@@ -593,6 +625,7 @@ def main(args):
                 # the part added by hand, so --apex-offset last reproduces this
                 # run's apex from a fresh vision reading.
                 write_apex_offset(np.asarray(apex, dtype=float) - apex_vision)
+                write_apex(np.asarray(apex, dtype=float))
 
         # Recorded onto args so they land in the .mat alongside everything else:
         # a sweep is not interpretable later without knowing which apex it
@@ -839,7 +872,8 @@ if __name__ == "__main__":
                         help="use this apex as 'x,y,z' in meters instead of "
                         "waiting for the detector. For spheres the camera cannot "
                         "see at all - dark, glossy or too small to return depth. "
-                        "Combine with --jog-apex to correct a rough guess by hand")
+                        "Combine with --jog-apex to correct a rough guess by hand. "
+                        "Pass 'last' to reuse the apex saved by the previous jog")
     parser.add_argument("--jog-apex", action="store_true",
                         help="after reading the vision apex, hover above it and "
                         "let the keyboard drive the cup onto the real apex. Only "
