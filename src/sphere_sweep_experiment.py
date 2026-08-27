@@ -122,10 +122,14 @@ def read_key():
 def jog_to_apex(rtde_help, apex, orientation, args):
     """Drive the cup onto the true apex by hand, starting from the vision guess.
 
-    Returns the corrected apex. Only x and y are taken from the arm: the tool
-    tip sits below the TCP by the whole tool length, which is not measured, so
-    the arm cannot report the apex height. z is left as vision found it, which
-    costs nothing in force mode because the descent searches for the surface.
+    Returns the corrected apex, all three axes taken from the arm.
+
+    Taking z as well is correct because `apex` is not a geometric point that
+    something else has to be offset from - it is a TCP target. Every waypoint is
+    built as apex + offset and handed straight to goToPose, so the pose the arm
+    is in when the cup sits on the apex is exactly the number the sweep wants.
+    Keeping a typed or vision z instead puts the hover plane somewhere unrelated
+    to the surface, and the descent then searches in the wrong place entirely.
 
     The point of this is that the vision error is a fixed offset, not noise -
     it comes from the camera's calibration and its viewing angle, so it barely
@@ -137,8 +141,10 @@ def jog_to_apex(rtde_help, apex, orientation, args):
     step = args.jog_step
 
     print()
-    print("Jogging to the apex. The cup is %.0f mm above the vision estimate."
+    print("Jogging to the apex. The cup is %.0f mm above the starting estimate."
           % (args.hover_height * 1e3))
+    print("Drive the cup down until it just touches the top of the sphere, then")
+    print("press Enter. All three axes are read from the arm at that moment.")
     print("  w/s  +x/-x     a/d  +y/-y     r/f  +z/-z")
     print("  [ ]  step down/up (now %.1f mm)" % (step * 1e3))
     print("  <Enter> accept, x abort")
@@ -152,12 +158,14 @@ def jog_to_apex(rtde_help, apex, orientation, args):
 
         if key in ("\r", "\n"):
             pose = rtde_help.rtde_r.getActualTCPPose()
-            corrected = np.array([pose[0], pose[1], start[2]])
+            corrected = np.array([pose[0], pose[1], pose[2]])
             delta = corrected - start
             print()
             print("Accepted apex x=%.5f y=%.5f z=%.5f" % tuple(corrected))
-            print("Jogged dx=%+.1f mm dy=%+.1f mm from where it started."
-                  % (delta[0] * 1e3, delta[1] * 1e3))
+            print("Jogged dx=%+.1f mm dy=%+.1f mm dz=%+.1f mm from where it "
+                  "started." % (delta[0] * 1e3, delta[1] * 1e3, delta[2] * 1e3))
+            print("Park the cup on the apex before accepting: this pose becomes "
+                  "the target every waypoint is measured from.")
             return corrected
 
         if key in ("x", "\x03"):
