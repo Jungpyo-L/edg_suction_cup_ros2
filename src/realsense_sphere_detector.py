@@ -50,6 +50,70 @@ def remove_statistical_outliers(points, num_neighbors, std_ratio):
     return points[mean_dist <= threshold]
 
 
+def fit_sphere_fixed_radius(points, radius, centre, iterations, tolerance):
+    """Gauss-Newton for the centre of a sphere of known radius.
+
+    Returns (centre, converged). Residual is |p - c| - R and the Jacobian row is
+    the unit vector from the point to the centre. Hitting the iteration cap is
+    not failure: the caller judges the answer by its residuals, not by whether
+    the step reached an arbitrary floor.
+    """
+    centre = np.asarray(centre, dtype=np.float64).copy()
+    converged = False
+    for _ in range(iterations):
+        offsets = points - centre
+        distances = np.linalg.norm(offsets, axis=1)
+        keep = distances > 1e-9
+        if keep.sum() < 4:
+            return centre, False
+        offsets, distances = offsets[keep], distances[keep]
+
+        step, *_ = np.linalg.lstsq(-offsets / distances[:, None],
+                                   -(distances - radius), rcond=None)
+        centre = centre + step
+        if np.linalg.norm(step) < tolerance:
+            converged = True
+            break
+    return centre, converged
+
+
+def fit_sphere_robust(points, radius, seed, band, iterations, tolerance,
+                      trim_rounds=4, min_inliers=60):
+    """Fixed-radius sphere fit that ignores points which are not on the sphere.
+
+    Alternates fitting with re-selecting the inliers - the points lying within
+    `band` of the current surface. Table edges, the mount and the arm fall out
+    after a round or two, so the centre is driven by sphere points only. Without
+    this every stray point pulls the centre, which is the dominant error when
+    the crop box is not perfectly clean.
+
+    Returns (centre, inliers, rms, ok) where rms is over the inliers alone -
+    pooling it with outliers hides exactly the contamination worth catching.
+    """
+    centre = np.asarray(seed, dtype=np.float64)
+    inliers = np.ones(points.shape[0], dtype=bool)
+
+    for _ in range(trim_rounds):
+        subset = points[inliers]
+        if subset.shape[0] < min_inliers:
+            return centre, inliers, float("inf"), False
+
+        centre, _ = fit_sphere_fixed_radius(subset, radius, centre,
+                                            iterations, tolerance)
+        residuals = np.abs(np.linalg.norm(points - centre, axis=1) - radius)
+        updated = residuals <= band
+        if updated.sum() < min_inliers:
+            return centre, inliers, float("inf"), False
+        if np.array_equal(updated, inliers):
+            inliers = updated
+            break
+        inliers = updated
+
+    residuals = np.linalg.norm(points[inliers] - centre, axis=1) - radius
+    rms = float(np.sqrt(np.mean(residuals ** 2)))
+    return centre, inliers, rms, True
+
+
 class RealSenseSphereDetector(Node):
     def __init__(self, sphere_radius=None):
         super().__init__("realsense_sphere_detector")
@@ -92,8 +156,27 @@ class RealSenseSphereDetector(Node):
         self.declare_parameter("min_fit_points", 100)
         self.declare_parameter("fit_iterations", 20)
         self.declare_parameter("fit_tolerance", 1e-6)
-        # Fit residual above which the cloud is judged not to be this sphere.
-        self.declare_parameter("max_fit_rms", 0.005)
+        # Inlier residual above which the fit is judged not to be this sphere.
+        # 0.005 sat on the D435's own depth noise, so good frames failed it;
+        # this is a gate on the fit, not a measure of the camera.
+        self.declare_parameter("max_fit_rms", 0.010)
+        # Points within this distance of the fitted surface count as sphere
+        # points. Roughly 2x the depth noise: wide enough to keep real surface,
+        # tight enough to shed the table and the mount.
+        self.declare_parameter("fit_inlier_band", 0.008)
+        # Reject the frame when the sphere accounts for less than this fraction
+        # of the cropped cloud - that means the crop is holding something else,
+        # or sphere_radius is wrong. 0.6 was chosen offline: it still accepts a
+        # cloud that is 40% table (67% inliers) but rejects a 40 mm sphere being
+        # fitted as 25 mm (53%), which 0.5 let through.
+        self.declare_parameter("min_inlier_fraction", 0.6)
+        # Clouds pooled before fitting. The sphere and camera are both static
+        # while the apex is read, so pooling lets independent depth noise
+        # average out before the fit runs. Measured offline: 10 frames cuts the
+        # centre error by about 15% and costs ~12 ms a callback; 30 frames gains
+        # almost nothing more and costs ~47 ms, which is slower than the camera.
+        # 1 disables pooling.
+        self.declare_parameter("accumulate_frames", 10)
 
         self.target_frame = self.get_parameter("target_frame").value
         self.crop_min = np.asarray(self.get_parameter("crop_min").value, dtype=np.float64)
@@ -114,6 +197,10 @@ class RealSenseSphereDetector(Node):
         self.fit_iterations = int(self.get_parameter("fit_iterations").value)
         self.fit_tolerance = float(self.get_parameter("fit_tolerance").value)
         self.max_fit_rms = float(self.get_parameter("max_fit_rms").value)
+        self.fit_inlier_band = float(self.get_parameter("fit_inlier_band").value)
+        self.min_inlier_fraction = float(self.get_parameter("min_inlier_fraction").value)
+        self.accumulate_frames = max(1, int(self.get_parameter("accumulate_frames").value))
+        self.cloud_history = deque(maxlen=self.accumulate_frames)
 
         self.apex_history = deque(maxlen=int(self.get_parameter("apex_history").value))
 
@@ -218,7 +305,21 @@ class RealSenseSphereDetector(Node):
             throttle_duration_sec=5.0,
         )
 
-        apex = self.estimate_apex(points)
+        # Pool recent clouds before fitting. Depth noise is independent frame to
+        # frame, so N frames shrink its contribution to the centre by ~sqrt(N),
+        # which is where most of the apex x/y wander came from. The sphere and
+        # camera are both static while this runs, so pooling is valid; the
+        # deque ages frames out on its own if the scene changes.
+        self.cloud_history.append(points)
+        pooled = (np.vstack(self.cloud_history)
+                  if self.accumulate_frames > 1 else points)
+        # Deliberately NOT re-voxelised. Averaging the pool back into voxel_leaf
+        # cells throws away exactly the independent samples pooling is there to
+        # collect - offline it made the pooled estimate worse than a single
+        # frame (0.67 mm vs 0.36 mm at 30 frames), while leaving the pool raw
+        # improved it to 0.29 mm.
+
+        apex = self.estimate_apex(pooled)
         if apex is None:
             return
 
@@ -234,18 +335,15 @@ class RealSenseSphereDetector(Node):
 
     def estimate_apex(self, points):
         """Apex of the sphere, by fit when a radius is known and by band otherwise."""
-        if self.sphere_radius > 0.0:
-            apex = self.estimate_apex_by_fit(points)
-            if apex is not None:
-                return apex
-            # Fall through to the band method rather than dropping the frame, so
-            # a fit that fails on one bad frame does not stall the topic.
-            self.get_logger().warn(
-                "Sphere fit did not converge; falling back to the top-band "
-                "centroid for this frame.",
-                throttle_duration_sec=5.0,
-            )
-        return self.estimate_apex_by_band(points)
+        if self.sphere_radius <= 0.0:
+            return self.estimate_apex_by_band(points)
+
+        # No band fallback here. When a radius is known and the fit rejects the
+        # cloud, the cloud is wrong - and the band centroid on a wrong cloud is
+        # wrong too, just without saying so. Dropping the frame is honest, and
+        # the apex topic is latched transient-local so consumers keep the last
+        # good value.
+        return self.estimate_apex_by_fit(points)
 
     def estimate_apex_by_band(self, points):
         """Centroid of the points sitting in the top apex_band of the cloud."""
@@ -268,57 +366,60 @@ class RealSenseSphereDetector(Node):
         camera's asymmetric view of it. Here every surface point constrains the
         centre, and fixing the radius means one-sided coverage still pins it
         down. It also removes the upward bias of taking a maximum of noisy z.
+
+        The fit is trimmed rather than plain least squares: any point that is
+        not on the sphere would otherwise pull the centre in proportion to how
+        far off it is.
         """
         if points.shape[0] < self.min_fit_points:
             return None
 
-        radius = self.sphere_radius
-        # Start from the band estimate's centre, one radius below the top.
         seed = self.estimate_apex_by_band(points)
         if seed is None:
             return None
-        centre = np.array([seed[0], seed[1], seed[2] - radius], dtype=np.float64)
+        seed_centre = np.array([seed[0], seed[1], seed[2] - self.sphere_radius])
 
-        for _ in range(self.fit_iterations):
-            offsets = points - centre
-            distances = np.linalg.norm(offsets, axis=1)
-            # A point exactly at the centre has no defined direction; drop it.
-            valid = distances > 1e-9
-            if valid.sum() < self.min_fit_points:
-                return None
-            offsets = offsets[valid]
-            distances = distances[valid]
-
-            # Gauss-Newton on residual r_i = |p_i - c| - R. The Jacobian row is
-            # the unit vector from the point to the centre.
-            residuals = distances - radius
-            jacobian = -offsets / distances[:, None]
-            step, *_ = np.linalg.lstsq(jacobian, -residuals, rcond=None)
-            centre = centre + step
-            if np.linalg.norm(step) < self.fit_tolerance:
-                break
-        else:
+        centre, inliers, rms, ok = fit_sphere_robust(
+            points,
+            self.sphere_radius,
+            seed_centre,
+            self.fit_inlier_band,
+            self.fit_iterations,
+            self.fit_tolerance,
+            min_inliers=self.min_fit_points,
+        )
+        if not ok:
+            self.get_logger().warn(
+                "Sphere fit failed: fewer than %d points remained on the surface."
+                % self.min_fit_points,
+                throttle_duration_sec=5.0,
+            )
             return None
 
-        # Reject a fit the data does not actually support: a cloud that is not a
-        # sphere of this radius will converge somewhere with a large residual.
-        rms = float(np.sqrt(np.mean(
-            (np.linalg.norm(points - centre, axis=1) - radius) ** 2
-        )))
+        fraction = float(inliers.sum()) / float(points.shape[0])
+        if fraction < self.min_inlier_fraction:
+            self.get_logger().warn(
+                "Only %.0f%% of the cloud lies on a %.3f m sphere (need %.0f%%); "
+                "the crop box is holding something else."
+                % (100.0 * fraction, self.sphere_radius,
+                   100.0 * self.min_inlier_fraction),
+                throttle_duration_sec=5.0,
+            )
+            return None
         if rms > self.max_fit_rms:
             self.get_logger().warn(
-                "Sphere fit RMS %.4f m exceeds max_fit_rms %.4f; is sphere_radius "
-                "correct and the crop box clean?" % (rms, self.max_fit_rms),
+                "Sphere fit inlier RMS %.4f m exceeds max_fit_rms %.4f; is "
+                "sphere_radius correct?" % (rms, self.max_fit_rms),
                 throttle_duration_sec=5.0,
             )
             return None
 
         self.get_logger().info(
-            "sphere fit: centre %s, RMS %.4f m over %d points"
-            % (np.round(centre, 4), rms, points.shape[0]),
+            "sphere fit: centre %s, inlier RMS %.4f m over %d/%d points"
+            % (np.round(centre, 4), rms, int(inliers.sum()), points.shape[0]),
             throttle_duration_sec=5.0,
         )
-        return np.array([centre[0], centre[1], centre[2] + radius])
+        return np.array([centre[0], centre[1], centre[2] + self.sphere_radius])
 
 
 def main():

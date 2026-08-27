@@ -1,0 +1,11 @@
+run,waypoint,descent_s,mean_drop_kPa
+"25 mm sphere, compass at radius/2 (30 deg)",center,1.87,-8.82
+"25 mm sphere, compass at radius/2 (30 deg)",north,0.00,-0.01
+"25 mm sphere, compass at radius/2 (30 deg)",west,0.00,-3.16
+"25 mm sphere, compass at radius/2 (30 deg)",south,0.00,-0.00
+"25 mm sphere, compass at radius/2 (30 deg)",east,0.00,-0.00
+"20 mm sphere, compass at radius/2 (30 deg)",center,1.53,-7.98
+"20 mm sphere, compass at radius/2 (30 deg)",north,0.00,-3.32
+"20 mm sphere, compass at radius/2 (30 deg)",west,0.00,-0.03
+"20 mm sphere, compass at radius/2 (30 deg)",south,0.00,-0.00
+"20 mm sphere, compass at radius/2 (30 deg)",east,0.00,-0.01
