@@ -77,6 +77,35 @@ def fit_sphere_fixed_radius(points, radius, centre, iterations, tolerance):
     return centre, converged
 
 
+def fit_sphere_free_radius(points, centre, radius, iterations, tolerance):
+    """Gauss-Newton on the centre and the radius together.
+
+    Used only to check the answer, never to produce it. Solving for the radius
+    as well is worse conditioned under one-sided coverage, which is exactly why
+    the real fit holds it fixed - but the radius it lands on is a direct test of
+    whether the thing being fitted really is the sphere you said it was, and
+    unlike an inlier fraction it does not change when the crop box gets looser.
+    """
+    centre = np.asarray(centre, dtype=np.float64).copy()
+    for _ in range(iterations):
+        offsets = points - centre
+        distances = np.linalg.norm(offsets, axis=1)
+        keep = distances > 1e-9
+        if keep.sum() < 4:
+            return centre, radius
+        offsets, distances = offsets[keep], distances[keep]
+
+        jacobian = np.column_stack(
+            [-offsets / distances[:, None], -np.ones(distances.shape[0])]
+        )
+        step, *_ = np.linalg.lstsq(jacobian, -(distances - radius), rcond=None)
+        centre = centre + step[:3]
+        radius = radius + step[3]
+        if np.linalg.norm(step) < tolerance:
+            break
+    return centre, radius
+
+
 def fit_sphere_robust(points, radius, seed, band, iterations, tolerance,
                       trim_rounds=4, min_inliers=60):
     """Fixed-radius sphere fit that ignores points which are not on the sphere.
@@ -91,9 +120,21 @@ def fit_sphere_robust(points, radius, seed, band, iterations, tolerance,
     pooling it with outliers hides exactly the contamination worth catching.
     """
     centre = np.asarray(seed, dtype=np.float64)
-    inliers = np.ones(points.shape[0], dtype=bool)
 
-    for _ in range(trim_rounds):
+    # Select the first inlier set from the seed sphere, not from the whole
+    # cloud. The seed sits on top of the cloud, which is where the sphere is,
+    # so this starts the trim already looking at the right object. Starting
+    # from every point instead lets a large flat table dominate the first fit,
+    # and no amount of trimming afterwards finds its way back to the sphere -
+    # which is what happens as soon as the crop box is not almost pure sphere.
+    #
+    # The band is annealed from wide to the requested value so the first pass
+    # tolerates the seed's own error - the top-band centroid is several mm
+    # high - while the last pass is as tight as asked for.
+    bands = np.geomspace(max(4.0 * band, 0.020), band, trim_rounds)
+    inliers = np.abs(np.linalg.norm(points - centre, axis=1) - radius) <= bands[0]
+
+    for round_band in bands:
         subset = points[inliers]
         if subset.shape[0] < min_inliers:
             return centre, inliers, float("inf"), False
@@ -101,7 +142,7 @@ def fit_sphere_robust(points, radius, seed, band, iterations, tolerance,
         centre, _ = fit_sphere_fixed_radius(subset, radius, centre,
                                             iterations, tolerance)
         residuals = np.abs(np.linalg.norm(points - centre, axis=1) - radius)
-        updated = residuals <= band
+        updated = residuals <= round_band
         if updated.sum() < min_inliers:
             return centre, inliers, float("inf"), False
         if np.array_equal(updated, inliers):
@@ -164,12 +205,17 @@ class RealSenseSphereDetector(Node):
         # points. Roughly 2x the depth noise: wide enough to keep real surface,
         # tight enough to shed the table and the mount.
         self.declare_parameter("fit_inlier_band", 0.008)
-        # Reject the frame when the sphere accounts for less than this fraction
-        # of the cropped cloud - that means the crop is holding something else,
-        # or sphere_radius is wrong. 0.6 was chosen offline: it still accepts a
-        # cloud that is 40% table (67% inliers) but rejects a 40 mm sphere being
-        # fitted as 25 mm (53%), which 0.5 let through.
-        self.declare_parameter("min_inlier_fraction", 0.6)
+        # Optional gate on how much of the cropped cloud lies on the sphere.
+        # Off by default: it conflates two different things, because a perfectly
+        # good fit on a sphere that is only a fifth of a loose crop box scores
+        # exactly the same as a bad fit on a tight one. radius_tolerance below
+        # tests the same question without caring how loose the crop is.
+        self.declare_parameter("min_inlier_fraction", 0.0)
+        # Refit the inliers with the radius free; reject if it disagrees with
+        # sphere_radius by more than this. This is what catches the wrong object
+        # or the wrong --sphere-radius, and unlike an inlier fraction it is a
+        # statement about the geometry rather than about the crop box.
+        self.declare_parameter("radius_tolerance", 0.004)
         # Clouds pooled before fitting. The sphere and camera are both static
         # while the apex is read, so pooling lets independent depth noise
         # average out before the fit runs. Measured offline: 10 frames cuts the
@@ -204,6 +250,7 @@ class RealSenseSphereDetector(Node):
         self.max_fit_rms = float(self.get_parameter("max_fit_rms").value)
         self.fit_inlier_band = float(self.get_parameter("fit_inlier_band").value)
         self.min_inlier_fraction = float(self.get_parameter("min_inlier_fraction").value)
+        self.radius_tolerance = float(self.get_parameter("radius_tolerance").value)
         self.accumulate_frames = max(1, int(self.get_parameter("accumulate_frames").value))
         self.cloud_history = deque(maxlen=self.accumulate_frames)
         self.depth_bias = float(self.get_parameter("depth_bias").value)
@@ -449,6 +496,20 @@ class RealSenseSphereDetector(Node):
                 throttle_duration_sec=5.0,
             )
             return None
+
+        _, free_radius = fit_sphere_free_radius(
+            points[inliers], centre, self.sphere_radius,
+            self.fit_iterations, self.fit_tolerance,
+        )
+        if abs(free_radius - self.sphere_radius) > self.radius_tolerance:
+            self.get_logger().warn(
+                "Fitted surface has radius %.4f m, not the %.4f m given; check "
+                "--sphere-radius, or the crop box is centred on something else."
+                % (free_radius, self.sphere_radius),
+                throttle_duration_sec=5.0,
+            )
+            return None
+
         if rms > self.max_fit_rms:
             self.get_logger().warn(
                 "Sphere fit inlier RMS %.4f m exceeds max_fit_rms %.4f; is "
@@ -459,6 +520,7 @@ class RealSenseSphereDetector(Node):
 
         tilt = self.view_tilt_deg(centre)
         view_txt = "" if tilt is None else ", view %.0f deg off vertical" % tilt
+        view_txt = ", radius %.4f m%s" % (free_radius, view_txt)
         self.get_logger().info(
             "sphere fit: centre %s, inlier RMS %.4f m over %d/%d points%s"
             % (np.round(centre, 4), rms, int(inliers.sum()), points.shape[0],

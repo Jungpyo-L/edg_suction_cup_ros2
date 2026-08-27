@@ -8,6 +8,7 @@
 import argparse
 import math
 import signal
+import sys
 import time
 from collections import deque
 
@@ -33,6 +34,105 @@ ROTVEC_DEFAULT = [2.263, -2.179, 0.000]  # rad
 # return is effectively a pure translation.
 HOME_POSITION = [0.558369, -0.051576, 0.404641]
 HOME_QUAT = [-0.722349, 0.691528, 0.000403, 0.001165]
+
+# Jog directions in base, the frame the UR controller works in. w and s run
+# along x, a and d along y, r and f along z.
+JOG_KEYS = {
+    "w": (1.0, 0.0, 0.0), "s": (-1.0, 0.0, 0.0),
+    "a": (0.0, 1.0, 0.0), "d": (0.0, -1.0, 0.0),
+    "r": (0.0, 0.0, 1.0), "f": (0.0, 0.0, -1.0),
+}
+
+
+def read_key():
+    """One keypress, no Enter. Restores the terminal before returning so that
+    everything printed around it behaves normally."""
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+def jog_to_apex(rtde_help, apex, orientation, args):
+    """Drive the cup onto the true apex by hand, starting from the vision guess.
+
+    Returns the corrected apex. Only x and y are taken from the arm: the tool
+    tip sits below the TCP by the whole tool length, which is not measured, so
+    the arm cannot report the apex height. z is left as vision found it, which
+    costs nothing in force mode because the descent searches for the surface.
+
+    The point of this is that the vision error is a fixed offset, not noise -
+    it comes from the camera's calibration and its viewing angle, so it barely
+    changes between runs. Correct it once here and the printed --apex-offset
+    replays it on later runs without jogging again.
+    """
+    start = np.asarray(apex, dtype=float)
+    target = start + np.array([0.0, 0.0, args.hover_height])
+    step = args.jog_step
+
+    print()
+    print("Jogging to the apex. The cup is %.0f mm above the vision estimate."
+          % (args.hover_height * 1e3))
+    print("  w/s  +x/-x     a/d  +y/-y     r/f  +z/-z")
+    print("  [ ]  step down/up (now %.1f mm)" % (step * 1e3))
+    print("  <Enter> accept, x abort")
+    print("Lateral moves happen at whatever height you are at, so lift before")
+    print("crossing the sphere if you have come down onto it.")
+
+    rtde_help.goToPose(rtde_help.getPoseObj(list(target), orientation))
+
+    while True:
+        key = read_key()
+
+        if key in ("\r", "\n"):
+            pose = rtde_help.rtde_r.getActualTCPPose()
+            corrected = np.array([pose[0], pose[1], start[2]])
+            delta = corrected - start
+            print()
+            print("Accepted apex x=%.5f y=%.5f z=%.5f" % tuple(corrected))
+            print("Vision was off by dx=%+.1f mm dy=%+.1f mm. To skip the jog "
+                  "next time, pass:" % (delta[0] * 1e3, delta[1] * 1e3))
+            print("  --apex-offset %.5f,%.5f,0" % (delta[0], delta[1]))
+            return corrected
+
+        if key in ("x", "\x03"):
+            raise KeyboardInterrupt
+
+        if key == "[":
+            step = max(0.0001, step / 2.0)
+            print("  step %.1f mm" % (step * 1e3))
+            continue
+        if key == "]":
+            step = min(0.010, step * 2.0)
+            print("  step %.1f mm" % (step * 1e3))
+            continue
+
+        direction = JOG_KEYS.get(key.lower())
+        if direction is None:
+            continue
+
+        moved = target + np.asarray(direction) * step
+        lateral = float(np.linalg.norm((moved - start)[:2]))
+        if lateral > args.max_offset:
+            print("  refusing to jog more than %.0f mm sideways from the vision "
+                  "estimate; it is %.0f mm out already."
+                  % (args.max_offset * 1e3, lateral * 1e3))
+            continue
+
+        target = moved
+        rtde_help.goToPose(rtde_help.getPoseObj(list(target), orientation),
+                           speed=0.02, acc=0.1)
+        offset = target - start
+        print("  x=%.5f y=%.5f z=%.5f   offset dx=%+.1f dy=%+.1f dz=%+.1f mm"
+              % (target[0], target[1], target[2],
+                 offset[0] * 1e3, offset[1] * 1e3, offset[2] * 1e3))
+
 
 def retreat_to_home(rtde_help, travel_z, orientation, go_home=True):
     """Bring the tool somewhere safe after an interrupted run.
@@ -418,6 +518,19 @@ def main(args):
         apex_frame = apex_listener.frame_id
         print("Sphere apex (%s): x=%.5f y=%.5f z=%.5f" % ((apex_frame,) + tuple(apex)))
 
+        apex_offset = np.asarray(parse_offsets(args.apex_offset)[0], dtype=float)
+        if np.any(apex_offset):
+            apex = np.asarray(apex, dtype=float) + apex_offset
+            print("Applied --apex-offset %s -> x=%.5f y=%.5f z=%.5f"
+                  % (np.round(apex_offset, 5), apex[0], apex[1], apex[2]))
+
+        if args.jog_apex:
+            if args.dry_run:
+                print("--jog-apex needs the robot, and --dry-run does not start "
+                      "it. Skipping the jog.")
+            else:
+                apex = jog_to_apex(rtde_help, apex, orientation_fixed, args)
+
 
         waypoints = []
         for label, (dx, dy, dz) in zip(labels, offsets):
@@ -651,6 +764,18 @@ if __name__ == "__main__":
     parser.add_argument("--max-offset", type=float, default=0.10,
                         help="reject waypoints farther than this from the apex (m)")
     parser.add_argument("--apex-topic", type=str, default="sphere_apex")
+    parser.add_argument("--jog-apex", action="store_true",
+                        help="after reading the vision apex, hover above it and "
+                        "let the keyboard drive the cup onto the real apex. Only "
+                        "x and y are taken from the arm; the tool length is not "
+                        "known, so z stays as vision found it")
+    parser.add_argument("--jog-step", type=float, default=0.001,
+                        help="starting jog increment (m), halved with [ and "
+                        "doubled with ]")
+    parser.add_argument("--apex-offset", type=str, default="0,0,0",
+                        help="correction added to the vision apex as 'dx,dy,dz' "
+                        "in meters. --jog-apex prints the value to use here, so "
+                        "a jog only has to be done once per camera setup")
     parser.add_argument("--apex-samples", type=int, default=20,
                         help="apex messages averaged before planning")
     parser.add_argument("--apex-timeout", type=float, default=20.0)
