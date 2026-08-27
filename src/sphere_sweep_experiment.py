@@ -7,6 +7,7 @@
 
 import argparse
 import math
+import signal
 import time
 from collections import deque
 
@@ -32,6 +33,51 @@ ROTVEC_DEFAULT = [2.263, -2.179, 0.000]  # rad
 # return is effectively a pure translation.
 HOME_POSITION = [0.558369, -0.051576, 0.404641]
 HOME_QUAT = [-0.722349, 0.691528, 0.000403, 0.001165]
+
+def retreat_to_home(rtde_help, travel_z, orientation, go_home=True):
+    """Bring the tool somewhere safe after an interrupted run.
+
+    Straight up to the travel plane first, never sideways: an aborted run can
+    leave the cup preloaded against the sphere, and a lateral move from there
+    drags the lip across the surface. Only once it is clear does it cross to the
+    parked pose.
+
+    Every step is guarded on its own. A retreat that fails halfway is still
+    better than one that gives up at the first exception, and the reason is
+    printed rather than swallowed so a stuck robot is visible.
+    """
+    try:
+        # Cancel whatever moveL was in flight, otherwise the next command queues
+        # behind a motion that is still running toward the old target.
+        rtde_help.rtde_c.stopL(1.0)
+        time.sleep(0.2)
+    except Exception as exc:
+        print("  could not stop the current move: %s" % exc)
+
+    try:
+        pose = rtde_help.rtde_r.getActualTCPPose()
+        # travel_z is unknown if the interrupt landed before the apex was read,
+        # in which case the tool has not descended anywhere and a small nominal
+        # lift is enough to clear the surface.
+        lift_z = pose[2] + 0.05 if travel_z is None else max(travel_z, pose[2])
+        print("  lifting straight up to z=%.4f" % lift_z)
+        rtde_help.goToPose(
+            rtde_help.getPoseObj([pose[0], pose[1], lift_z], orientation)
+        )
+    except Exception as exc:
+        print("  lift failed: %s" % exc)
+        return
+
+    if not go_home:
+        print("  staying at the travel plane (--no-home).")
+        return
+
+    try:
+        print("  returning to the parked pose %s." % np.round(HOME_POSITION, 4))
+        rtde_help.goToPose(rtde_help.getPoseObj(HOME_POSITION, HOME_QUAT))
+    except Exception as exc:
+        print("  return to home failed: %s" % exc)
+
 
 # Phase codes published on /sync so the continuous logs can be cut into phases
 # afterwards. The published value is waypoint_index * 10 + event, so a reader
@@ -337,10 +383,14 @@ def main(args):
 
     rclpy.init()
     node = rclpy.create_node("sphere_sweep_experiment")
+    ft_help = file_help = rtde_help = None
+    sync_pub = data_logger_client = None
+    # Held outside the try so an interrupt anywhere below still knows where the
+    # safe plane is and which way the tool is pointing.
+    travel_z = None
+    orientation_fixed = R.from_rotvec(ROTVEC_DEFAULT).as_quat()
     try:
         apex_listener = ApexListener(node, args.apex_topic)
-        ft_help = file_help = rtde_help = None
-        sync_pub = data_logger_client = None
 
         # A dry run only needs the apex and some arithmetic. Skipping the rest
         # matters for more than speed: rtdeHelp opens an RTDEControlInterface,
@@ -368,7 +418,6 @@ def main(args):
         apex_frame = apex_listener.frame_id
         print("Sphere apex (%s): x=%.5f y=%.5f z=%.5f" % ((apex_frame,) + tuple(apex)))
 
-        orientation_fixed = R.from_rotvec(ROTVEC_DEFAULT).as_quat()
 
         waypoints = []
         for label, (dx, dy, dz) in zip(labels, offsets):
@@ -498,7 +547,40 @@ def main(args):
         file_help.clearTmpFolder()
         print("============ Sphere sweep complete!")
     except KeyboardInterrupt:
-        pass
+        print()
+        print("============ Interrupted. Recovering the arm; do not press Ctrl-C again.")
+        # Deafen the process to further interrupts for the duration of the
+        # retreat. A second Ctrl-C here would abort the recovery and leave the
+        # cup pressed against the sphere, which is the exact situation this
+        # handler exists to prevent.
+        previous_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            if data_logger_client is not None:
+                try:
+                    call_enable_service(node, data_logger_client, False)
+                    time.sleep(0.2)
+                except Exception as exc:
+                    print("  could not stop the data logger: %s" % exc)
+
+            if rtde_help is not None:
+                retreat_to_home(rtde_help, travel_z, orientation_fixed,
+                                go_home=not args.no_home)
+
+            # Save whatever was recorded before the interrupt. A partial sweep
+            # is still data, and it is the whole point of being able to stop
+            # one part way through.
+            if file_help is not None:
+                try:
+                    file_help.saveDataParams(
+                        args, appendTxt="Sphere_sweep_%s_interrupted" % args.mode
+                    )
+                    file_help.clearTmpFolder()
+                    print("  partial run saved.")
+                except Exception as exc:
+                    print("  nothing saved: %s" % exc)
+        finally:
+            signal.signal(signal.SIGINT, previous_handler)
+        print("============ Recovered.")
     finally:
         node.destroy_node()
         if rclpy.ok():
