@@ -544,14 +544,35 @@ def main(args):
             time.sleep(1)
             file_help.clearTmpFolder()
 
-        print("Waiting for a settled sphere apex estimate...")
-        apex = apex_listener.wait_for_apex(args.apex_samples, args.apex_timeout)
-        apex_frame = apex_listener.frame_id
-        print("Sphere apex (%s): x=%.5f y=%.5f z=%.5f" % ((apex_frame,) + tuple(apex)))
+        if args.apex is not None:
+            # Vision bypassed entirely. Some targets return no depth at all -
+            # a smooth, glossy, dark sphere gives the stereo matcher nothing to
+            # match, and the IR projector reflects off it rather than scattering
+            # back - so the detector never sees them however the crop is set.
+            apex = np.asarray(parse_offsets(args.apex)[0], dtype=float)
+            apex_frame = "manual"
+            print("Using the apex given on the command line: x=%.5f y=%.5f z=%.5f"
+                  % tuple(apex))
+            print("Vision is not consulted, so realsense_sphere_detector.py does "
+                  "not need to be running.")
+        else:
+            print("Waiting for a settled sphere apex estimate...")
+            apex = apex_listener.wait_for_apex(args.apex_samples, args.apex_timeout)
+            apex_frame = apex_listener.frame_id
+            print("Sphere apex (%s): x=%.5f y=%.5f z=%.5f"
+                  % ((apex_frame,) + tuple(apex)))
 
         apex_vision = np.asarray(apex, dtype=float)
+        args.apex_source = apex_frame
 
         offset_text = args.apex_offset.strip()
+        if args.apex is not None and offset_text not in ("", "0,0,0"):
+            # The saved offset corrects the camera, and there is no camera in
+            # this path. Applying it to a hand-entered apex would move the arm
+            # away from the number that was typed.
+            print("Ignoring --apex-offset: it corrects the vision estimate, and "
+                  "--apex replaces it.")
+            offset_text = "0,0,0"
         if offset_text == "last":
             offset_text = read_apex_offset()
             print("Loaded saved apex offset %s from %s"
@@ -814,6 +835,11 @@ if __name__ == "__main__":
     parser.add_argument("--max-offset", type=float, default=0.10,
                         help="reject waypoints farther than this from the apex (m)")
     parser.add_argument("--apex-topic", type=str, default="sphere_apex")
+    parser.add_argument("--apex", type=str, default=None,
+                        help="use this apex as 'x,y,z' in meters instead of "
+                        "waiting for the detector. For spheres the camera cannot "
+                        "see at all - dark, glossy or too small to return depth. "
+                        "Combine with --jog-apex to correct a rough guess by hand")
     parser.add_argument("--jog-apex", action="store_true",
                         help="after reading the vision apex, hover above it and "
                         "let the keyboard drive the cup onto the real apex. Only "
