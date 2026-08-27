@@ -6,6 +6,7 @@
 # sphere is placed in the workspace.
 
 import argparse
+import json
 import math
 import os
 import signal
@@ -45,6 +46,23 @@ APEX_OFFSET_FILE = os.path.expanduser("~/.ros/suction_cup_apex_offset.txt")
 # camera that is working, this records where the sphere is when there is no
 # camera in the loop at all.
 APEX_FILE = os.path.expanduser("~/.ros/suction_cup_apex.txt")
+# Apexes keyed by sphere radius, so swapping spheres does not lose the other
+# one. Each sphere sits in its own place on the fixture and has its own apex
+# height, so one saved value per radius is the natural unit.
+APEX_STORE = os.path.expanduser("~/.ros/suction_cup_apexes.json")
+
+
+def apex_key(radius):
+    return "%.4f" % float(radius)
+
+
+def load_apex_store():
+    try:
+        with open(APEX_STORE) as handle:
+            stored = json.load(handle)
+        return stored if isinstance(stored, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def write_apex_offset(offset):
@@ -59,27 +77,50 @@ def write_apex_offset(offset):
         print("Could not save the offset (%s). Pass it by hand next time." % exc)
 
 
-def write_apex(apex):
-    """Record the accepted apex so --apex last can replay it."""
+def write_apex(radius, apex):
+    """Record the accepted apex under its sphere radius.
+
+    Read-modify-write rather than overwrite, so saving the 20 mm sphere does
+    not discard the 25 mm one.
+    """
     try:
-        os.makedirs(os.path.dirname(APEX_FILE), exist_ok=True)
-        with open(APEX_FILE, "w") as handle:
-            handle.write("%.6f,%.6f,%.6f" % tuple(apex))
-        print("Apex saved to %s. Reuse it with --apex last." % APEX_FILE)
-    except OSError as exc:
+        stored = load_apex_store()
+        stored[apex_key(radius)] = [round(float(v), 6) for v in apex]
+        os.makedirs(os.path.dirname(APEX_STORE), exist_ok=True)
+        with open(APEX_STORE, "w") as handle:
+            json.dump(stored, handle, indent=2, sort_keys=True)
+            handle.write(chr(10))
+        print("Apex saved for radius %s m in %s. Reuse it with --apex last."
+              % (apex_key(radius), APEX_STORE))
+    except (OSError, TypeError, ValueError) as exc:
         print("Could not save the apex (%s). Copy it by hand." % exc)
 
 
-def read_apex():
-    """The apex written by the last accepted jog."""
+def read_apex(radius):
+    """The apex last accepted for this radius."""
+    stored = load_apex_store()
+    entry = stored.get(apex_key(radius))
+    if entry is not None:
+        return ",".join("%.6f" % float(v) for v in entry)
+
+    # One-time fallback to the single-value file written before apexes were
+    # kept per radius. Whatever is in there was saved for whichever sphere was
+    # on the fixture at the time, so it is only offered when nothing better is.
     try:
         with open(APEX_FILE) as handle:
-            return handle.read().strip()
-    except OSError as exc:
-        raise RuntimeError(
-            "--apex last, but no saved apex in %s (%s). Run once with an "
-            "explicit --apex x,y,z and --jog-apex first." % (APEX_FILE, exc)
-        )
+            legacy = handle.read().strip()
+        print("No apex saved for radius %s m; using the older single saved apex "
+              "from %s. Jog once to replace it." % (apex_key(radius), APEX_FILE))
+        return legacy
+    except OSError:
+        pass
+
+    known = ", ".join(sorted(stored)) if stored else "none"
+    raise RuntimeError(
+        "--apex last, but nothing saved for radius %s m in %s (saved radii: %s). "
+        "Run once with an explicit --apex x,y,z and --jog-apex first."
+        % (apex_key(radius), APEX_STORE, known)
+    )
 
 
 def read_apex_offset():
@@ -587,7 +628,7 @@ def main(args):
             # back - so the detector never sees them however the crop is set.
             apex_text = args.apex.strip()
             if apex_text == "last":
-                apex_text = read_apex()
+                apex_text = read_apex(args.radius)
                 print("Loaded saved apex %s from %s" % (apex_text, APEX_FILE))
             apex = np.asarray(parse_offsets(apex_text)[0], dtype=float)
             apex_frame = "manual"
@@ -633,7 +674,7 @@ def main(args):
                 # the part added by hand, so --apex-offset last reproduces this
                 # run's apex from a fresh vision reading.
                 write_apex_offset(np.asarray(apex, dtype=float) - apex_vision)
-                write_apex(np.asarray(apex, dtype=float))
+                write_apex(args.radius, np.asarray(apex, dtype=float))
 
         # Recorded onto args so they land in the .mat alongside everything else:
         # a sweep is not interpretable later without knowing which apex it
@@ -881,7 +922,9 @@ if __name__ == "__main__":
                         "waiting for the detector. For spheres the camera cannot "
                         "see at all - dark, glossy or too small to return depth. "
                         "Combine with --jog-apex to correct a rough guess by hand. "
-                        "Pass 'last' to reuse the apex saved by the previous jog")
+                        "Pass 'last' to reuse the apex saved by the previous jog "
+                        "for this --radius; apexes are kept per radius, so "
+                        "swapping spheres does not lose the other one")
     parser.add_argument("--jog-apex", action="store_true",
                         help="after reading the vision apex, hover above it and "
                         "let the keyboard drive the cup onto the real apex. Only "
