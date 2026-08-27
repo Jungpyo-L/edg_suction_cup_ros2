@@ -7,6 +7,7 @@
 
 import argparse
 import math
+import os
 import signal
 import sys
 import time
@@ -34,6 +35,37 @@ ROTVEC_DEFAULT = [2.263, -2.179, 0.000]  # rad
 # return is effectively a pure translation.
 HOME_POSITION = [0.558369, -0.051576, 0.404641]
 HOME_QUAT = [-0.722349, 0.691528, 0.000403, 0.001165]
+
+# Where an accepted jog leaves its correction so the next run can reuse it.
+# Under ~/.ros rather than beside the results, because it describes the camera
+# setup rather than any one experiment, and it should survive clearing results.
+APEX_OFFSET_FILE = os.path.expanduser("~/.ros/suction_cup_apex_offset.txt")
+
+
+def write_apex_offset(offset):
+    """Record a jog correction for later runs. Best effort: failing to save it
+    costs a re-jog, which is not worth aborting a sweep over."""
+    try:
+        os.makedirs(os.path.dirname(APEX_OFFSET_FILE), exist_ok=True)
+        with open(APEX_OFFSET_FILE, "w") as handle:
+            handle.write("%.6f,%.6f,%.6f" % tuple(offset))
+        print("Saved to %s. Reuse it with --apex-offset last." % APEX_OFFSET_FILE)
+    except OSError as exc:
+        print("Could not save the offset (%s). Pass it by hand next time." % exc)
+
+
+def read_apex_offset():
+    """The offset written by the last accepted jog."""
+    try:
+        with open(APEX_OFFSET_FILE) as handle:
+            text = handle.read().strip()
+    except OSError as exc:
+        raise RuntimeError(
+            "--apex-offset last, but no saved offset in %s (%s). Run once with "
+            "--jog-apex first." % (APEX_OFFSET_FILE, exc)
+        )
+    return text
+
 
 # Jog directions in base, the frame the UR controller works in. w and s run
 # along x, a and d along y, r and f along z.
@@ -96,9 +128,8 @@ def jog_to_apex(rtde_help, apex, orientation, args):
             delta = corrected - start
             print()
             print("Accepted apex x=%.5f y=%.5f z=%.5f" % tuple(corrected))
-            print("Vision was off by dx=%+.1f mm dy=%+.1f mm. To skip the jog "
-                  "next time, pass:" % (delta[0] * 1e3, delta[1] * 1e3))
-            print("  --apex-offset %.5f,%.5f,0" % (delta[0], delta[1]))
+            print("Jogged dx=%+.1f mm dy=%+.1f mm from where it started."
+                  % (delta[0] * 1e3, delta[1] * 1e3))
             return corrected
 
         if key in ("x", "\x03"):
@@ -518,10 +549,17 @@ def main(args):
         apex_frame = apex_listener.frame_id
         print("Sphere apex (%s): x=%.5f y=%.5f z=%.5f" % ((apex_frame,) + tuple(apex)))
 
-        apex_offset = np.asarray(parse_offsets(args.apex_offset)[0], dtype=float)
+        apex_vision = np.asarray(apex, dtype=float)
+
+        offset_text = args.apex_offset.strip()
+        if offset_text == "last":
+            offset_text = read_apex_offset()
+            print("Loaded saved apex offset %s from %s"
+                  % (offset_text, APEX_OFFSET_FILE))
+        apex_offset = np.asarray(parse_offsets(offset_text)[0], dtype=float)
         if np.any(apex_offset):
-            apex = np.asarray(apex, dtype=float) + apex_offset
-            print("Applied --apex-offset %s -> x=%.5f y=%.5f z=%.5f"
+            apex = apex_vision + apex_offset
+            print("Applied apex offset %s -> x=%.5f y=%.5f z=%.5f"
                   % (np.round(apex_offset, 5), apex[0], apex[1], apex[2]))
 
         if args.jog_apex:
@@ -530,6 +568,18 @@ def main(args):
                       "it. Skipping the jog.")
             else:
                 apex = jog_to_apex(rtde_help, apex, orientation_fixed, args)
+                # Save the total correction from the vision estimate, not just
+                # the part added by hand, so --apex-offset last reproduces this
+                # run's apex from a fresh vision reading.
+                write_apex_offset(np.asarray(apex, dtype=float) - apex_vision)
+
+        # Recorded onto args so they land in the .mat alongside everything else:
+        # a sweep is not interpretable later without knowing which apex it
+        # actually probed, and a jogged apex exists nowhere else.
+        args.apex_vision = [float(v) for v in apex_vision]
+        args.apex_used = [float(v) for v in np.asarray(apex, dtype=float)]
+        args.apex_correction = [float(v) for v in
+                                (np.asarray(apex, dtype=float) - apex_vision)]
 
 
         waypoints = []
@@ -774,8 +824,9 @@ if __name__ == "__main__":
                         "doubled with ]")
     parser.add_argument("--apex-offset", type=str, default="0,0,0",
                         help="correction added to the vision apex as 'dx,dy,dz' "
-                        "in meters. --jog-apex prints the value to use here, so "
-                        "a jog only has to be done once per camera setup")
+                        "in meters, or the word 'last' to reuse the offset saved "
+                        "by the most recent --jog-apex. A jog only has to be done "
+                        "once per camera setup")
     parser.add_argument("--apex-samples", type=int, default=20,
                         help="apex messages averaged before planning")
     parser.add_argument("--apex-timeout", type=float, default=20.0)
