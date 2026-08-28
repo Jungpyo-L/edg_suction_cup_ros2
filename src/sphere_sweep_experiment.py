@@ -563,8 +563,16 @@ def validate_args(args):
         )
 
 
-def wait_for_data_logger(node, client):
+def wait_for_data_logger(node, client, timeout_sec=30.0):
+    """Wait for data_logger.py, but give up rather than loop forever."""
+    deadline = time.time() + timeout_sec
     while not client.wait_for_service(timeout_sec=1.0):
+        if time.time() > deadline:
+            raise RuntimeError(
+                "The data_logging service never appeared within %.0f s. Start "
+                "suction_experiment.launch.py, which runs data_logger.py."
+                % timeout_sec
+            )
         node.get_logger().info("Waiting for the data_logging service...")
 
 
@@ -629,7 +637,8 @@ def main(args):
             apex_text = args.apex.strip()
             if apex_text == "last":
                 apex_text = read_apex(args.radius)
-                print("Loaded saved apex %s from %s" % (apex_text, APEX_FILE))
+                print("Loaded saved apex %s for radius %s m from %s"
+                      % (apex_text, apex_key(args.radius), APEX_STORE))
             apex = np.asarray(parse_offsets(apex_text)[0], dtype=float)
             apex_frame = "manual"
             print("Using the apex given on the command line: x=%.5f y=%.5f z=%.5f"
@@ -848,6 +857,10 @@ def main(args):
             signal.signal(signal.SIGINT, previous_handler)
         print("============ Recovered.")
     finally:
+        # Release the UR control program. Leaving it running is what made a
+        # sweep occasionally do nothing until it was started a second time.
+        if rtde_help is not None:
+            rtde_help.disconnect()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

@@ -26,12 +26,60 @@ class rtdeHelp(object):
             self.tf_buffer = tf2_ros.Buffer()
             self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, node)
         self.rtde_frequency = rtde_frequency
+        self.robot_ip = robot_ip
+        # Bound before the connections are attempted so a failure part way
+        # through still leaves disconnect() something safe to look at.
+        self.rtde_c = None
+        self.rtde_r = None
 
-        self.rtde_c = rtde_control.RTDEControlInterface(robot_ip, rtde_frequency)
+        # Announced because this is the one call that can sit for minutes: the
+        # UR runs a single control program at a time, and RTDEControlInterface
+        # uploads its own. If ur_control.launch.py already holds that slot this
+        # blocks with no output at all, which reads as the script doing nothing.
+        print("Opening the RTDE control interface at %s ..." % robot_ip)
+        try:
+            self.rtde_c = rtde_control.RTDEControlInterface(robot_ip, rtde_frequency)
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not open the RTDE control interface at %s (%s). The UR "
+                "accepts one control program at a time, so this usually means "
+                "ur_control.launch.py is holding it. Stop that and retry."
+                % (robot_ip, exc)
+            )
+        if not self.rtde_c.isConnected():
+            raise RuntimeError(
+                "RTDE control interface at %s reported not connected. Stop "
+                "ur_control.launch.py, which contends for the same program "
+                "slot, and retry." % robot_ip
+            )
         self.rtde_r = rtde_receive.RTDEReceiveInterface(robot_ip, rtde_frequency)
+        print("RTDE connected.")
 
         self.checkDistThres = 1e-3
         self.checkQuatThres = 10e-3
+
+    def disconnect(self):
+        """Release the control program and close both interfaces.
+
+        Nothing used to do this, so every run left its uploaded program running
+        on the controller. The next run then inherited whatever state that left
+        behind, which is why a sweep would sometimes do nothing until it was
+        started a second time. Safe to call more than once, and safe on a
+        half-built helper.
+        """
+        try:
+            if self.rtde_c is not None and self.rtde_c.isConnected():
+                self.rtde_c.stopScript()
+                self.rtde_c.disconnect()
+        except Exception as exc:
+            print("Could not release the RTDE control program: %s" % exc)
+        try:
+            if self.rtde_r is not None and self.rtde_r.isConnected():
+                self.rtde_r.disconnect()
+        except Exception as exc:
+            print("Could not close the RTDE receive interface: %s" % exc)
+        self.rtde_c = None
+        self.rtde_r = None
 
     def _append_ns(self, in_ns, suffix):
         """
