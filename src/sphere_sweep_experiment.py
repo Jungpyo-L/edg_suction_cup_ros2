@@ -178,12 +178,18 @@ def jog_to_apex(rtde_help, apex, orientation, args):
     replays it on later runs without jogging again.
     """
     start = np.asarray(apex, dtype=float)
-    target = start + np.array([0.0, 0.0, args.hover_height])
+    # Where the jog begins, which is not the sweep's hover height. The jog wants
+    # room above a guess that may be wrong by centimetres; the sweep wants the
+    # cup to start right where the jog left it. Tying both to one number means
+    # a safe jog start forces a needlessly high hover, and a hover of zero
+    # would drive the cup onto the unverified guess as the jog opens.
+    height = args.hover_height if args.jog_height is None else args.jog_height
+    target = start + np.array([0.0, 0.0, height])
     step = args.jog_step
 
     print()
     print("Jogging to the apex. The cup is %.0f mm above the starting estimate."
-          % (args.hover_height * 1e3))
+          % (height * 1e3))
     print("Drive the cup down until it just touches the top of the sphere, then")
     print("press Enter. All three axes are read from the arm at that moment.")
     print("  w/s  +x/-x     a/d  +y/-y     r/f  +z/-z")
@@ -946,6 +952,13 @@ if __name__ == "__main__":
     parser.add_argument("--jog-step", type=float, default=0.001,
                         help="starting jog increment (m), halved with [ and "
                         "doubled with ]")
+    parser.add_argument("--jog-height", type=float, default=None,
+                        help="height above the starting apex estimate that the "
+                        "jog opens at (m). Defaults to --hover-height. Give it "
+                        "separately to start the jog well clear of a rough "
+                        "guess while still running the sweep with a hover of "
+                        "zero, so the cup returns to exactly the pose accepted "
+                        "in the jog")
     parser.add_argument("--apex-offset", type=str, default="0,0,0",
                         help="correction added to the vision apex as 'dx,dy,dz' "
                         "in meters, or the word 'last' to reuse the offset saved "
