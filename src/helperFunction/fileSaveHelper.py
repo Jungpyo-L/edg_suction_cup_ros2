@@ -93,7 +93,13 @@ class fileSaveHelp(object):
         if args is not None:
             argsDic = vars(args)
             for key in list(argsDic.keys()):
-                savingDictionary[key]=argsDic[key]
+                # savemat cannot write None, and an optional argument that was
+                # not given is exactly that - it would abort the save after the
+                # whole run had already been performed. Store an empty string so
+                # the key is still there: dropping it instead would make an
+                # unused option indistinguishable from an older run predating it.
+                value = argsDic[key]
+                savingDictionary[key] = "" if value is None else value
         
 
         fileNameParts = re.split(r'_|\.', firstFileName)
