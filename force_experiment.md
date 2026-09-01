@@ -36,7 +36,7 @@ ros2 launch cluttered_grasping_tactile handeye_publish.launch.py
 Detector:
 
 ```bash
-ros2 run suction_cup realsense_sphere_detector.py --ros-args -p target_frame:=base -p crop_min:="[-100.0, -0.15, 0.0]" -p crop_max:="[100.0, 0.08, 0.12]"
+ros2 run suction_cup realsense_sphere_detector.py --sphere-radius 0.040 --crop-zmax 0.12
 ```
 
 Suction stack — FT sensor, pressure, data logger:

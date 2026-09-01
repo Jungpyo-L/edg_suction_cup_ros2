@@ -156,7 +156,7 @@ def fit_sphere_robust(points, radius, seed, band, iterations, tolerance,
 
 
 class RealSenseSphereDetector(Node):
-    def __init__(self, sphere_radius=None):
+    def __init__(self, sphere_radius=None, crop_zmax=None):
         super().__init__("realsense_sphere_detector")
 
         self.declare_parameter("input_topic", "/camera/camera/depth/color/points")
@@ -236,6 +236,11 @@ class RealSenseSphereDetector(Node):
         self.target_frame = self.get_parameter("target_frame").value
         self.crop_min = np.asarray(self.get_parameter("crop_min").value, dtype=np.float64)
         self.crop_max = np.asarray(self.get_parameter("crop_max").value, dtype=np.float64)
+        # --crop-zmax on the command line wins over the ROS parameter. It is the
+        # one crop number that has to change per sphere, so it is worth having
+        # without the --ros-args ceremony that a whole three-element array needs.
+        if crop_zmax is not None:
+            self.crop_max[2] = float(crop_zmax)
         self.voxel_leaf = float(self.get_parameter("voxel_leaf").value)
         self.outlier_neighbors = int(self.get_parameter("outlier_neighbors").value)
         self.outlier_std_ratio = float(self.get_parameter("outlier_std_ratio").value)
@@ -545,10 +550,20 @@ def main():
         "a least-squares sphere fit instead of the top-band centroid. Pass the "
         "same value used for the sweep's --radius",
     )
+    parser.add_argument(
+        "--crop-zmax",
+        type=float,
+        default=None,
+        help="height of the crop box ceiling above the table (m), overriding the "
+        "z of the crop_max parameter. Must clear the sphere - a ball of radius R "
+        "sitting on the table is 2R tall - but stay below the arm, which is the "
+        "only thing that can outrank the sphere as the highest point",
+    )
     args, _ = parser.parse_known_args()
 
     rclpy.init()
-    node = RealSenseSphereDetector(sphere_radius=args.sphere_radius)
+    node = RealSenseSphereDetector(sphere_radius=args.sphere_radius,
+                                   crop_zmax=args.crop_zmax)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
