@@ -36,14 +36,14 @@ Bench-tuned values are baked into the node defaults, so T4 needs no `--ros-args`
 |---|---|---|
 | `target_frame` | `base` | what RTDE expects, see below |
 | `crop_min` | `[-100.0, -0.15, 0.0]` | x unbounded, y trimmed to the table, z at the table surface |
-| `crop_max` | `[100.0, 0.08, 0.08]` | z ceiling just under the arm |
+| `crop_max` | `[100.0, 0.08, 0.12]` | z ceiling above the tallest sphere, under the arm |
 
 To override, every value needs an explicit decimal point — `-100` parses as an
 integer array and the node rejects it as the wrong parameter type:
 
 ```bash
 ros2 run suction_cup realsense_sphere_detector.py --ros-args \
-  -p crop_min:="[-100.0, -0.15, 0.0]" -p crop_max:="[100.0, 0.08, 0.08]"
+  -p crop_min:="[-100.0, -0.15, 0.0]" -p crop_max:="[100.0, 0.08, 0.12]"
 ```
 
 `crop_max`'s z is the one that matters. Set it snugly above the sphere. Too high

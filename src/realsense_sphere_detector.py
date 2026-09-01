@@ -174,11 +174,15 @@ class RealSenseSphereDetector(Node):
         # found by hand on the bench: x unbounded, y trimmed to the table around
         # the sphere, z from the table surface up to just under the arm.
         #
-        # z_max is the one that matters. Keep it snug above the sphere - set it
-        # too high and the robot arm becomes the highest thing in the cloud, and
-        # the apex silently jumps to the arm while still looking plausible.
+        # z_max is the one that matters. It has to clear the sphere - a 40 mm
+        # radius ball on the table is 80 mm tall, so the old 0.08 ceiling sliced
+        # its apex off and the estimate quietly became a ring down the side.
+        # 0.12 clears the largest sphere here with room to spare. Do not raise it
+        # further without checking the cloud: too high and the robot arm becomes
+        # the highest thing in it, and the apex silently jumps to the arm while
+        # still looking plausible.
         self.declare_parameter("crop_min", [-100.0, -0.15, 0.0])
-        self.declare_parameter("crop_max", [100.0, 0.08, 0.08])
+        self.declare_parameter("crop_max", [100.0, 0.08, 0.12])
         self.declare_parameter("voxel_leaf", 0.002)
         self.declare_parameter("outlier_neighbors", 12)
         self.declare_parameter("outlier_std_ratio", 1.0)
