@@ -11,12 +11,14 @@ import math
 import os
 import signal
 import sys
+import threading
 import time
 from collections import deque
 
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PointStamped, WrenchStamped
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import Int8
 
@@ -424,6 +426,11 @@ def read_avg_fz(node, ft_help, n_spins=5, timeout_sec=0.05):
     return abs(getattr(ft_help, "averageFz_noOffset", 0.0))
 
 
+# How long bias_ft_sensor spins before zeroing, s. Long enough that every
+# sample in FT_CallbackHelp's 7-sample average arrived at the current pose.
+BIAS_FLUSH = 0.25
+
+
 def bias_ft_sensor(node, ft_help, n_spins=60, timeout_sec=0.05):
     """Fill the FT averaging buffer off the surface, then zero the sensor.
 
@@ -440,6 +447,15 @@ def bias_ft_sensor(node, ft_help, n_spins=60, timeout_sec=0.05):
             "No /netft_data received - cannot bias the FT sensor. Check that "
             "netft_node is running and the ATI sensor IP is reachable."
         )
+    # Refill the average before trusting it. startAverage stays True for the
+    # rest of the run, so from the second waypoint on the loop above exits
+    # after a single callback, leaving six of the seven averaged samples from
+    # whenever this node last spun - the previous waypoint's preload. Biasing
+    # on that zeroes the sensor at the old contact load, and the next descent
+    # reads the load's absence as contact before the arm has moved.
+    flush_until = time.time() + BIAS_FLUSH
+    while time.time() < flush_until:
+        rclpy.spin_once(node, timeout_sec=0.01)
     ft_help.setNowAsBias()
 
 
@@ -511,87 +527,183 @@ def descend_to_contact(node, rtde_help, ft_help, xy, z_start, orientation, args,
 # a lone noise spike would otherwise mark contact early, stopping the tap short
 # and mislabelling where it began.
 CONTACT_SAMPLES = 3
+# Furthest the cup may travel between two force samples, m. This is what
+# "faster than the sensor can detect" means as a distance: the stop can only
+# act on a sample, so contact and the --tap-force crossing are each located no
+# more finely than this, and on a contact of stiffness k the force can run past
+# the target by up to k times this before the sample that stops it arrives.
+MAX_TRAVEL_PER_SAMPLE = 1e-4
+# Measured sample rates jitter by a sample or two a second. Without slack, a
+# speed sitting exactly at the limit would be refused or allowed at random.
+RATE_SLACK = 0.05
+# Absolute cap on --tap-speed whatever the sensor rate, m/s.
+MAX_TAP_SPEED = 0.05
 # Deceleration for stopL, m/s^2. Stopping distance is v^2/2a: 0.01 mm at the
 # default 10 mm/s, 0.25 mm at MAX_TAP_SPEED.
 STOP_DECEL = 5.0
-# The stop acts through ROS and RTDE latency, so the overshoot past --tap-force
-# grows with speed. Raise this deliberately, not by accident on the command line.
-MAX_TAP_SPEED = 0.05
 # How close to the search floor counts as having reached it, m.
 FLOOR_TOLERANCE = 1e-4
-# Keep listening this long after stopL so the recorded peak includes the load
-# added while the arm decelerates, s.
+# Each tap is biased from the mean of the samples taken over this long at
+# hover, s.
+TAP_BIAS_DURATION = 0.2
+# A tap stops if no force sample arrives for this many sample periods, or for
+# MIN_STALE seconds if that is longer. Without it a sensor that dies mid-descent
+# reads as "no force" and the arm drives on to the search floor. The floor keeps
+# a scheduling hiccup from passing for a dead sensor at high sample rates.
+STALE_SAMPLES = 5
+MIN_STALE = 0.05
+# How often the tap loop checks position and the distance limits, s. The force
+# stop does not wait for this: a crossing wakes the loop as it arrives.
+TAP_LOOP_PERIOD = 0.001
+# Keep recording this long after stopL so the peak includes the load added
+# while the arm decelerates, s.
 POST_STOP_LISTEN = 0.05
-TAP_REASONS = ("force", "indent limit", "search limit", "timeout")
+TAP_REASONS = ("force", "indent limit", "search limit", "timeout",
+               "sensor stalled")
 
 
 class TapWatcher:
-    """Every raw Fz sample during a tap, not the average FT_CallbackHelp keeps.
+    """Judges every force sample during a tap, on a thread of its own.
 
-    FT_CallbackHelp reports a 7-sample moving average, which trails the real
-    force by about three samples - at 100 Hz, 30 ms, a third of a millimetre at
-    10 mm/s. Harmless for a stepped descent that stops and settles before it
-    reads; too late for a moving one. Here each sample is judged once, as it
-    arrives, so neither the running peak nor the contact test can miss one that
-    landed between two passes of the tap loop.
+    It sees each raw sample rather than FT_CallbackHelp's 7-sample average,
+    which trails the real force by about three samples - at 100 Hz, a third of
+    a millimetre at 10 mm/s. And it runs on its own node and executor in a
+    background thread, so samples are handled as they arrive even while the
+    main thread is blocked in stopL or a moveL, rather than piling up until the
+    next spin_once. A sample over --tap-force sets `crossed`, which the tap
+    loop waits on, so the stop is issued within one sample of the crossing.
     """
 
-    def __init__(self, node, contact_force, topic="netft_data"):
+    def __init__(self, contact_force, topic="netft_data"):
         self.contact_force = contact_force
+        self.lock = threading.Lock()
+        self.crossed = threading.Event()
+        self.count = 0
+        self.last_sample = None
+        self.collecting = None
+        self.rate = None
         self.armed = False
         self.offset = 0.0
-        self.read_z = None
+        self.tap_force = float("inf")
+        self.z_now = 0.0
         self.peak = 0.0
         self.candidate = None
         self.z_contact = None
         self.streak = 0
-        node.create_subscription(WrenchStamped, topic, self._on_wrench, 100)
 
-    def arm(self, offset, read_z):
+        self.node = rclpy.create_node("sphere_sweep_tap_ft")
+        self.node.create_subscription(WrenchStamped, topic, self._on_wrench, 100)
+        self.executor = SingleThreadedExecutor()
+        self.executor.add_node(self.node)
+        self.thread = threading.Thread(target=self._spin, daemon=True)
+        self.thread.start()
+
+    def _spin(self):
+        try:
+            self.executor.spin()
+        except Exception:
+            # Shut down while spinning. The main thread owns the cleanup.
+            pass
+
+    def close(self):
+        self.executor.shutdown(timeout_sec=1.0)
+        self.node.destroy_node()
+
+    def measure_rate(self, duration=1.0):
+        """Samples per second actually arriving - measured, not assumed."""
+        with self.lock:
+            start_count = self.count
+        start = time.monotonic()
+        time.sleep(duration)
+        with self.lock:
+            received = self.count - start_count
+        self.rate = received / (time.monotonic() - start)
+        return self.rate
+
+    def bias(self, duration):
+        """Mean raw Fz over the next `duration` seconds."""
+        with self.lock:
+            self.collecting = []
+        time.sleep(duration)
+        with self.lock:
+            samples, self.collecting = self.collecting, None
+        if len(samples) < 3:
+            raise RuntimeError(
+                "Only %d force samples in %.2f s at hover - cannot bias the tap. "
+                "Check that netft_node is running." % (len(samples), duration))
+        return float(np.mean(samples))
+
+    def arm(self, offset, tap_force, z_now):
         """Start judging samples against this bias, forgetting the last tap."""
-        self.offset = offset
-        self.read_z = read_z
-        self.peak = 0.0
-        self.candidate = None
-        self.z_contact = None
-        self.streak = 0
-        self.armed = True
+        with self.lock:
+            self.offset = offset
+            self.tap_force = tap_force
+            self.z_now = z_now
+            self.peak = 0.0
+            self.candidate = None
+            self.z_contact = None
+            self.streak = 0
+            self.crossed.clear()
+            self.armed = True
 
     def disarm(self):
-        self.armed = False
+        with self.lock:
+            self.armed = False
+
+    def seconds_since_sample(self):
+        with self.lock:
+            last = self.last_sample
+        return float("inf") if last is None else time.monotonic() - last
 
     def _on_wrench(self, msg):
-        if not self.armed:
-            return
-        fz = abs(msg.wrench.force.z - self.offset)
-        self.peak = max(self.peak, fz)
-        if self.z_contact is not None:
-            return
-        if fz >= self.contact_force:
-            if self.streak == 0:
-                self.candidate = self.read_z()
-            self.streak += 1
-            if self.streak >= CONTACT_SAMPLES:
-                self.z_contact = self.candidate
-        else:
-            self.streak = 0
+        raw = msg.wrench.force.z
+        with self.lock:
+            self.count += 1
+            self.last_sample = time.monotonic()
+            if self.collecting is not None:
+                self.collecting.append(raw)
+            if not self.armed:
+                return
+            fz = abs(raw - self.offset)
+            if fz > self.peak:
+                self.peak = fz
+            if fz >= self.tap_force:
+                self.crossed.set()
+            if self.z_contact is not None:
+                return
+            if fz >= self.contact_force:
+                if self.streak == 0:
+                    # The latest arm height the tap loop has read.
+                    self.candidate = self.z_now
+                self.streak += 1
+                if self.streak >= CONTACT_SAMPLES:
+                    self.z_contact = self.candidate
+            else:
+                self.streak = 0
 
 
-def drain(node, max_callbacks=20):
-    """Run every callback waiting in the queue, not just one.
+def check_tap_speed(args, rate):
+    """Refuse a --tap-speed the force sensor is too slow to keep up with."""
+    if rate <= 0:
+        raise RuntimeError(
+            "No /netft_data arriving - tap mode needs the force sensor. Check "
+            "that netft_node is running and the ATI sensor IP is reachable.")
+    per_sample = args.tap_speed / rate
+    allowed = rate * MAX_TRAVEL_PER_SAMPLE * (1.0 + RATE_SLACK)
+    print("Force sensor at %.0f Hz: at %.1f mm/s the cup moves %.3f mm between "
+          "samples (limit %.3f mm, so up to %.1f mm/s)."
+          % (rate, args.tap_speed * 1e3, per_sample * 1e3,
+             MAX_TRAVEL_PER_SAMPLE * 1e3, min(allowed, MAX_TAP_SPEED) * 1e3))
+    if args.tap_speed > allowed:
+        raise ValueError(
+            "--tap-speed %.1f mm/s is too fast for a force sensor at %.0f Hz: "
+            "the cup would move %.3f mm between samples, over the %.3f mm "
+            "limit. Use --tap-speed %.4f or slower."
+            % (args.tap_speed * 1e3, rate, per_sample * 1e3,
+               MAX_TRAVEL_PER_SAMPLE * 1e3, math.floor(allowed * 1e4) / 1e4))
 
-    spin_once handles a single callback per call. Wrench messages can arrive
-    faster than one per pass of the tap loop, and handling one each time would
-    fall steadily behind, so the stop would act on readings that grow older the
-    longer the descent runs.
-    """
-    rclpy.spin_once(node, timeout_sec=0.001)
-    for _ in range(max_callbacks):
-        rclpy.spin_once(node, timeout_sec=0.0)
 
-
-def tap_surface(node, rtde_help, ft_help, watch, xy, z_start, orientation, args,
-                on_event):
+def tap_surface(rtde_help, watch, xy, z_start, orientation, args, on_event):
     """One continuous descent that stops at --tap-force, then straight back up.
 
     Returns (z_contact, z_stop, peak_fz, reason): z_contact is None when nothing
@@ -600,8 +712,8 @@ def tap_surface(node, rtde_help, ft_help, watch, xy, z_start, orientation, args,
     The descent is a single asynchronous moveL aimed at the search floor and
     ended early by stopL. Aiming at the floor rather than at the predicted
     surface makes the move's own endpoint the hard limit: if this loop stalls
-    or dies, the arm still cannot travel further than --max-search. The force
-    and indentation limits only ever stop it sooner.
+    or dies, the arm still cannot travel further than --max-search. The force,
+    indentation and sensor-stall checks only ever stop it sooner.
     """
     x, y = xy
     floor = z_start - args.max_search
@@ -609,25 +721,34 @@ def tap_surface(node, rtde_help, ft_help, watch, xy, z_start, orientation, args,
     def read_z():
         return rtde_help.rtde_r.getActualTCPPose()[2]
 
-    watch.arm(ft_help.offSetFz, read_z)
+    # Biased here, at hover with the arm still, from samples taken just now -
+    # never from a buffer that might still hold the previous tap's load.
+    offset = watch.bias(TAP_BIAS_DURATION)
+    watch.arm(offset, args.tap_force, read_z())
+    stale_limit = max(STALE_SAMPLES / watch.rate, MIN_STALE)
     # The whole search at speed plus the ramp up, with margin. A backstop only:
     # the floor test ends the loop first unless the arm has stalled.
-    deadline = (time.time() + args.max_search / args.tap_speed
+    deadline = (time.monotonic() + args.max_search / args.tap_speed
                 + args.tap_speed / args.tap_acc + 2.0)
 
     reason = None
     announced = False
+    on_event(EVENT_DESCEND)
     rtde_help.goToPose(rtde_help.getPoseObj([x, y, floor], orientation),
                        speed=args.tap_speed, acc=args.tap_acc, asynchronous=True)
     try:
         while True:
-            drain(node)
+            crossed = watch.crossed.wait(TAP_LOOP_PERIOD)
             z = read_z()
+            watch.z_now = z
             if watch.z_contact is not None and not announced:
                 on_event(EVENT_CONTACT)
                 announced = True
-            if watch.peak >= args.tap_force:
+            if crossed:
                 reason = "force"
+                break
+            if watch.seconds_since_sample() > stale_limit:
+                reason = "sensor stalled"
                 break
             if (watch.z_contact is not None
                     and watch.z_contact - z >= args.max_indent):
@@ -636,15 +757,13 @@ def tap_surface(node, rtde_help, ft_help, watch, xy, z_start, orientation, args,
             if z <= floor + FLOOR_TOLERANCE:
                 reason = "search limit"
                 break
-            if time.time() > deadline:
+            if time.monotonic() > deadline:
                 reason = "timeout"
                 break
     finally:
         rtde_help.rtde_c.stopL(STOP_DECEL)
 
-    settle_until = time.time() + POST_STOP_LISTEN
-    while time.time() < settle_until:
-        drain(node)
+    time.sleep(POST_STOP_LISTEN)
     watch.disarm()
     z_stop = read_z()
 
@@ -663,7 +782,6 @@ def tap_surface(node, rtde_help, ft_help, watch, xy, z_start, orientation, args,
                        speed=args.tap_speed, acc=args.tap_acc)
     on_event(EVENT_RETRACT_END)
     return z_contact, z_stop, watch.peak, reason
-
 
 def validate_args(args):
     """Reject argument values that would make the descent loops non-terminating.
@@ -816,7 +934,11 @@ def main(args):
         if not args.dry_run:
             ft_help = FT_CallbackHelp(node)
             if tap_mode:
-                tap_watch = TapWatcher(node, args.contact_force)
+                tap_watch = TapWatcher(args.contact_force)
+                # Measured before anything moves, so a sensor too slow for the
+                # requested speed is refused while the arm is still parked.
+                args.ft_rate = tap_watch.measure_rate()
+                check_tap_speed(args, args.ft_rate)
             time.sleep(0.5)
             file_help = fileSaveHelp()
             time.sleep(0.5)
@@ -981,14 +1103,15 @@ def main(args):
                     rtde_help.getPoseObj(list(touch_xyz), orientation_fixed)
                 )
             elif tap_mode:
-                bias_ft_sensor(node, ft_help)
                 gate("Press <Enter> to tap")
-                publish_event(index, EVENT_DESCEND)
                 z_contact, z_stop, peak, reason = tap_surface(
-                    node, rtde_help, ft_help, tap_watch,
-                    (touch_xyz[0], touch_xyz[1]), hover_xyz[2],
-                    orientation_fixed, args,
-                    on_event=lambda event, i=index: publish_event(i, event),
+                    rtde_help, tap_watch, (touch_xyz[0], touch_xyz[1]),
+                    hover_xyz[2], orientation_fixed, args,
+                    # Publish only. publish_event also spins the main node,
+                    # which would hold up the tap loop mid-descent for as long
+                    # as that node has callbacks queued.
+                    on_event=lambda event, i=index: sync_pub.publish(
+                        Int8(data=i * 10 + event)),
                 )
                 if z_contact is None:
                     print("  %-6s tap: no contact, stopped at z=%.5f on %s, "
@@ -1091,6 +1214,11 @@ def main(args):
         # sweep occasionally do nothing until it was started a second time.
         if rtde_help is not None:
             rtde_help.disconnect()
+        if tap_watch is not None:
+            try:
+                tap_watch.close()
+            except Exception as exc:
+                print("  could not stop the tap force listener: %s" % exc)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
