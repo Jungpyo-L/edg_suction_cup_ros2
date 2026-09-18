@@ -783,6 +783,78 @@ def tap_surface(rtde_help, watch, xy, z_start, orientation, args, on_event):
     on_event(EVENT_RETRACT_END)
     return z_contact, z_stop, watch.peak, reason
 
+def _in_windows(line, windows):
+    try:
+        t = float(line.split(",", 1)[0])
+    except ValueError:
+        return False
+    return any(start <= t <= end for start, end in windows)
+
+
+def trim_to_taps(file_names):
+    """Cut this run's CSVs down to the tap windows, in place.
+
+    Each window runs from EVENT_DESCEND to EVENT_PRELOAD for one waypoint: the
+    start of the descent to the moment it was stopped, including the listen
+    after stopL, so the peak is in. The approach from hover is kept because it
+    is the pre-contact baseline each pressure channel is measured against.
+
+    Cut after the fact rather than by switching the logger on and off per tap:
+    each enable re-runs topic discovery, which can take seconds, and opens a
+    new file set named to the second, so two taps a second apart would write
+    over each other. The windows come from the /sync events the sweep itself
+    published, so they are the instants the robot actually acted on.
+
+    A window with a start and no end - an interrupted tap - is kept to the end
+    of the file. Returns the number of windows; 0 means there was nothing to
+    cut by, and every file is left whole.
+    """
+    names = file_names.split()
+    sync = [name for name in names if name.endswith("__sync.csv")]
+    if len(sync) != 1:
+        print("--log-tap-only: no /sync log among the CSVs, keeping all data.")
+        return 0
+
+    starts, ends = {}, {}
+    with open(sync[0]) as handle:
+        next(handle, None)
+        for line in handle:
+            fields = line.strip().split(",")
+            if len(fields) < 2:
+                continue
+            try:
+                t = float(fields[0])
+                waypoint, event = divmod(int(float(fields[1])), 10)
+            except ValueError:
+                continue
+            if event == EVENT_DESCEND:
+                starts.setdefault(waypoint, t)
+            elif event == EVENT_PRELOAD:
+                ends.setdefault(waypoint, t)
+    windows = [(start, ends.get(waypoint, float("inf")))
+               for waypoint, start in sorted(starts.items())]
+    if not windows:
+        print("--log-tap-only: no taps in the /sync log, keeping all data.")
+        return 0
+
+    for name in names:
+        with open(name) as handle:
+            lines = handle.readlines()
+        if not lines:
+            continue
+        kept = [lines[0]] + [line for line in lines[1:]
+                             if _in_windows(line, windows)]
+        # Written beside the original and swapped in, so a failure part way
+        # through leaves the untrimmed file rather than half of one.
+        with open(name + ".tmp", "w") as handle:
+            handle.writelines(kept)
+        os.replace(name + ".tmp", name)
+    unfinished = sum(1 for _, end in windows if end == float("inf"))
+    print("--log-tap-only: kept only the %d tap windows%s."
+          % (len(windows), ", one unfinished" if unfinished else ""))
+    return len(windows)
+
+
 def validate_args(args):
     """Reject argument values that would make the descent loops non-terminating.
 
@@ -853,6 +925,10 @@ def validate_args(args):
             "--tap-force grows with speed; raise MAX_TAP_SPEED deliberately if "
             "you mean it." % (args.tap_speed, MAX_TAP_SPEED)
         )
+    if args.log_tap_only and args.mode != "tap":
+        raise ValueError(
+            "--log-tap-only cuts the log to the tap windows, and only --mode "
+            "tap has taps.")
     count = 5 if args.radius > 0.0 else len(parse_offsets(args.offsets))
     if count > MAX_WAYPOINTS:
         raise ValueError(
@@ -917,6 +993,7 @@ def main(args):
     ft_help = file_help = rtde_help = None
     tap_watch = None
     tap_results = []
+    logging_response = None
     sync_pub = data_logger_client = None
     # Held outside the try so an interrupt anywhere below still knows where the
     # safe plane is and which way the tool is pointing.
@@ -1157,6 +1234,12 @@ def main(args):
 
         call_enable_service(node, data_logger_client, False)
         time.sleep(0.2)
+        if args.log_tap_only:
+            try:
+                trim_to_taps(logging_response.output_file_name)
+            except Exception as exc:
+                print("--log-tap-only: could not cut to the taps (%s), keeping "
+                      "all data." % exc)
 
         if not args.no_home:
             # Safe as a single move: the last waypoint left the tool in the
@@ -1193,6 +1276,13 @@ def main(args):
             if rtde_help is not None:
                 retreat_to_home(rtde_help, travel_z, orientation_fixed,
                                 go_home=not args.no_home)
+
+            if args.log_tap_only and logging_response is not None:
+                try:
+                    trim_to_taps(logging_response.output_file_name)
+                except Exception as exc:
+                    print("  could not cut to the taps (%s), keeping all "
+                          "data." % exc)
 
             # Save whatever was recorded before the interrupt. A partial sweep
             # is still data, and it is the whole point of being able to stop
@@ -1292,6 +1382,11 @@ if __name__ == "__main__":
                         "a second")
     parser.add_argument("--tap-acc", type=float, default=0.5,
                         help="tap mode: acceleration (m/s^2)")
+    parser.add_argument("--log-tap-only", action="store_true",
+                        help="tap mode: keep only the logged data from the start "
+                        "of each descent to the moment it stopped, dropping "
+                        "travel, bias and retract. The logger still records "
+                        "the whole run; it is cut when the run is saved")
     parser.add_argument("--max-indent", type=float, default=0.006,
                         help="tap mode: stop if the cup goes this far past first "
                         "contact without reaching --tap-force (m). 6 mm is the "
