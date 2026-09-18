@@ -269,15 +269,21 @@ def print_report(report):
         print("%-58s %8s %5d  %s" % (name[:58], class_name(kappa), kept, notes))
 
 
-def models():
+def models(n_channels):
     from sklearn.ensemble import RandomForestClassifier
-    from sklearn.linear_model import LogisticRegression
+    from sklearn.linear_model import LogisticRegression, RidgeClassifierCV
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
+    from minirocket import MiniRocket
     return {
         "logreg": make_pipeline(StandardScaler(),
                                 LogisticRegression(C=1.0, max_iter=5000)),
         "forest": RandomForestClassifier(n_estimators=500, random_state=0),
+        # Ridge with its penalty chosen by internal cross-validation over the
+        # same range as the MiniRocket paper.
+        "minirocket": make_pipeline(MiniRocket(n_channels=n_channels),
+                                    StandardScaler(),
+                                    RidgeClassifierCV(alphas=np.logspace(-3, 3, 10))),
     }
 
 
@@ -342,14 +348,18 @@ def main(args):
               "class." % ", ".join(thin))
 
     features = X.reshape(len(X), -1)
-    candidates = models()
+    candidates = models(X.shape[1])
     for name, model in candidates.items():
         evaluate(name, model, features, y, groups, classes)
 
     # Fitted on every tap for use on new data. Its accuracy is the
     # leave-one-run-out figure above, not anything measured on this fit.
     os.makedirs(os.path.expanduser(args.out), exist_ok=True)
-    out = os.path.join(os.path.expanduser(args.out), "curvature_%s" % args.representation)
+    # Named by representation and length, so a model always sits beside the
+    # dataset it was trained on: rerunning with another --points would
+    # otherwise replace the dataset under models built at the old length.
+    out = os.path.join(os.path.expanduser(args.out), "curvature_%s_%dpt"
+                       % (args.representation, args.points))
     np.savez(out + "_dataset.npz", X=X, y=y, groups=groups,
              channels=np.array(names), files=np.array([m[0] for m in meta]),
              waypoints=np.array([m[1] for m in meta]))
@@ -394,7 +404,11 @@ if __name__ == "__main__":
                         help="time representation: seconds before contact")
     parser.add_argument("--post", type=float, default=0.3,
                         help="time representation: seconds after contact")
-    parser.add_argument("--model", choices=["logreg", "forest"], default="logreg",
-                        help="which of the two evaluated models to save")
+    parser.add_argument("--model", choices=["logreg", "forest", "minirocket"],
+                        default="logreg",
+                        help="which of the evaluated models to save. MiniRocket "
+                        "reads the shape of each curve and wants longer series "
+                        "than the default --points 32 gives it room for; try "
+                        "--points 128 alongside it")
     parser.add_argument("--out", default="~/EDG_Experiment/ml")
     main(parser.parse_args())
