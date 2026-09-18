@@ -16,7 +16,7 @@ from collections import deque
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, WrenchStamped
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import Int8
 
@@ -311,6 +311,10 @@ EVENT_DWELL_END = 4
 # many steps a descent takes.
 EVENT_DESCEND_STEP = 5
 EVENT_PRELOAD_STEP = 6
+# Tap mode only: the cup is back at the hover pose. Not EVENT_DWELL_END - a tap
+# has no dwell, and reusing that code would make plot_sweep shade the retract
+# as one. In tap mode EVENT_PRELOAD marks the instant the descent was stopped.
+EVENT_RETRACT_END = 7
 MAX_WAYPOINTS = 12
 
 # Cap on retained apex samples. The listener keeps receiving for the whole run,
@@ -503,6 +507,164 @@ def descend_to_contact(node, rtde_help, ft_help, xy, z_start, orientation, args,
     return z_contact, z, fz
 
 
+# Tap mode. Consecutive raw samples over --contact-force needed to call contact:
+# a lone noise spike would otherwise mark contact early, stopping the tap short
+# and mislabelling where it began.
+CONTACT_SAMPLES = 3
+# Deceleration for stopL, m/s^2. Stopping distance is v^2/2a: 0.01 mm at the
+# default 10 mm/s, 0.25 mm at MAX_TAP_SPEED.
+STOP_DECEL = 5.0
+# The stop acts through ROS and RTDE latency, so the overshoot past --tap-force
+# grows with speed. Raise this deliberately, not by accident on the command line.
+MAX_TAP_SPEED = 0.05
+# How close to the search floor counts as having reached it, m.
+FLOOR_TOLERANCE = 1e-4
+# Keep listening this long after stopL so the recorded peak includes the load
+# added while the arm decelerates, s.
+POST_STOP_LISTEN = 0.05
+TAP_REASONS = ("force", "indent limit", "search limit", "timeout")
+
+
+class TapWatcher:
+    """Every raw Fz sample during a tap, not the average FT_CallbackHelp keeps.
+
+    FT_CallbackHelp reports a 7-sample moving average, which trails the real
+    force by about three samples - at 100 Hz, 30 ms, a third of a millimetre at
+    10 mm/s. Harmless for a stepped descent that stops and settles before it
+    reads; too late for a moving one. Here each sample is judged once, as it
+    arrives, so neither the running peak nor the contact test can miss one that
+    landed between two passes of the tap loop.
+    """
+
+    def __init__(self, node, contact_force, topic="netft_data"):
+        self.contact_force = contact_force
+        self.armed = False
+        self.offset = 0.0
+        self.read_z = None
+        self.peak = 0.0
+        self.candidate = None
+        self.z_contact = None
+        self.streak = 0
+        node.create_subscription(WrenchStamped, topic, self._on_wrench, 100)
+
+    def arm(self, offset, read_z):
+        """Start judging samples against this bias, forgetting the last tap."""
+        self.offset = offset
+        self.read_z = read_z
+        self.peak = 0.0
+        self.candidate = None
+        self.z_contact = None
+        self.streak = 0
+        self.armed = True
+
+    def disarm(self):
+        self.armed = False
+
+    def _on_wrench(self, msg):
+        if not self.armed:
+            return
+        fz = abs(msg.wrench.force.z - self.offset)
+        self.peak = max(self.peak, fz)
+        if self.z_contact is not None:
+            return
+        if fz >= self.contact_force:
+            if self.streak == 0:
+                self.candidate = self.read_z()
+            self.streak += 1
+            if self.streak >= CONTACT_SAMPLES:
+                self.z_contact = self.candidate
+        else:
+            self.streak = 0
+
+
+def drain(node, max_callbacks=20):
+    """Run every callback waiting in the queue, not just one.
+
+    spin_once handles a single callback per call. Wrench messages can arrive
+    faster than one per pass of the tap loop, and handling one each time would
+    fall steadily behind, so the stop would act on readings that grow older the
+    longer the descent runs.
+    """
+    rclpy.spin_once(node, timeout_sec=0.001)
+    for _ in range(max_callbacks):
+        rclpy.spin_once(node, timeout_sec=0.0)
+
+
+def tap_surface(node, rtde_help, ft_help, watch, xy, z_start, orientation, args,
+                on_event):
+    """One continuous descent that stops at --tap-force, then straight back up.
+
+    Returns (z_contact, z_stop, peak_fz, reason): z_contact is None when nothing
+    was touched, and reason is one of TAP_REASONS.
+
+    The descent is a single asynchronous moveL aimed at the search floor and
+    ended early by stopL. Aiming at the floor rather than at the predicted
+    surface makes the move's own endpoint the hard limit: if this loop stalls
+    or dies, the arm still cannot travel further than --max-search. The force
+    and indentation limits only ever stop it sooner.
+    """
+    x, y = xy
+    floor = z_start - args.max_search
+
+    def read_z():
+        return rtde_help.rtde_r.getActualTCPPose()[2]
+
+    watch.arm(ft_help.offSetFz, read_z)
+    # The whole search at speed plus the ramp up, with margin. A backstop only:
+    # the floor test ends the loop first unless the arm has stalled.
+    deadline = (time.time() + args.max_search / args.tap_speed
+                + args.tap_speed / args.tap_acc + 2.0)
+
+    reason = None
+    announced = False
+    rtde_help.goToPose(rtde_help.getPoseObj([x, y, floor], orientation),
+                       speed=args.tap_speed, acc=args.tap_acc, asynchronous=True)
+    try:
+        while True:
+            drain(node)
+            z = read_z()
+            if watch.z_contact is not None and not announced:
+                on_event(EVENT_CONTACT)
+                announced = True
+            if watch.peak >= args.tap_force:
+                reason = "force"
+                break
+            if (watch.z_contact is not None
+                    and watch.z_contact - z >= args.max_indent):
+                reason = "indent limit"
+                break
+            if z <= floor + FLOOR_TOLERANCE:
+                reason = "search limit"
+                break
+            if time.time() > deadline:
+                reason = "timeout"
+                break
+    finally:
+        rtde_help.rtde_c.stopL(STOP_DECEL)
+
+    settle_until = time.time() + POST_STOP_LISTEN
+    while time.time() < settle_until:
+        drain(node)
+    watch.disarm()
+    z_stop = read_z()
+
+    z_contact = watch.z_contact
+    if z_contact is None and watch.candidate is not None:
+        # A stiff surface can go from contact to --tap-force inside the
+        # confirmation window, so the streak never completed. The first sample
+        # over the threshold is still where contact began.
+        z_contact = watch.candidate
+    if z_contact is not None and not announced:
+        on_event(EVENT_CONTACT)
+    on_event(EVENT_PRELOAD)
+
+    # Straight back up, no dwell: the touch is the measurement.
+    rtde_help.goToPose(rtde_help.getPoseObj([x, y, z_start], orientation),
+                       speed=args.tap_speed, acc=args.tap_acc)
+    on_event(EVENT_RETRACT_END)
+    return z_contact, z_stop, watch.peak, reason
+
+
 def validate_args(args):
     """Reject argument values that would make the descent loops non-terminating.
 
@@ -518,6 +680,10 @@ def validate_args(args):
         "--contact-force": args.contact_force,
         "--descend-speed": args.descend_speed,
         "--descend-acc": args.descend_acc,
+        "--tap-force": args.tap_force,
+        "--tap-speed": args.tap_speed,
+        "--tap-acc": args.tap_acc,
+        "--max-indent": args.max_indent,
         "--apex-samples": args.apex_samples,
         "--apex-timeout": args.apex_timeout,
     }
@@ -555,6 +721,19 @@ def validate_args(args):
             "--force-ceiling (%.2f N) must exceed --contact-force (%.2f N), or the "
             "preload aborts on the same reading that triggered contact."
             % (args.force_ceiling, args.contact_force)
+        )
+    if args.tap_force <= args.contact_force:
+        raise ValueError(
+            "--tap-force (%.2f N) must exceed --contact-force (%.2f N), or the "
+            "tap stops on the reading that marks contact."
+            % (args.tap_force, args.contact_force)
+        )
+    if args.tap_speed > MAX_TAP_SPEED:
+        raise ValueError(
+            "--tap-speed %.3f m/s is above the %.3f m/s this script allows. The "
+            "stop acts through ROS and RTDE latency, so the overshoot past "
+            "--tap-force grows with speed; raise MAX_TAP_SPEED deliberately if "
+            "you mean it." % (args.tap_speed, MAX_TAP_SPEED)
         )
     count = 5 if args.radius > 0.0 else len(parse_offsets(args.offsets))
     if count > MAX_WAYPOINTS:
@@ -596,9 +775,21 @@ def main(args):
 
     validate_args(args)
     offset_mode = args.mode == "offset"
+    tap_mode = args.mode == "tap"
     if offset_mode:
         print("Offset mode: holding %.1f mm above the apex plane, no contact."
               % (args.standoff * 1e3))
+    elif tap_mode:
+        print("Tap mode: %.0f mm/s down until %.1f N, then straight back up. "
+              "Stops early %.1f mm past contact, or %.1f mm below hover."
+              % (args.tap_speed * 1e3, args.tap_force, args.max_indent * 1e3,
+                 args.max_search * 1e3))
+        # On args so they land in the .mat, interrupted runs included.
+        args.tap_results = np.zeros((0, 5))
+        args.tap_columns = ("waypoint, z_contact (nan if none), z_stop, "
+                            "peak_fz, reason (%s)"
+                            % ", ".join("%d %s" % item
+                                        for item in enumerate(TAP_REASONS)))
     else:
         print("Force mode: descending to %.2f N contact, then %.1f mm preload."
               % (args.contact_force, args.preload_depth * 1e3))
@@ -606,6 +797,8 @@ def main(args):
     rclpy.init()
     node = rclpy.create_node("sphere_sweep_experiment")
     ft_help = file_help = rtde_help = None
+    tap_watch = None
+    tap_results = []
     sync_pub = data_logger_client = None
     # Held outside the try so an interrupt anywhere below still knows where the
     # safe plane is and which way the tool is pointing.
@@ -622,6 +815,8 @@ def main(args):
         # detector, no robot or suction stack.
         if not args.dry_run:
             ft_help = FT_CallbackHelp(node)
+            if tap_mode:
+                tap_watch = TapWatcher(node, args.contact_force)
             time.sleep(0.5)
             file_help = fileSaveHelp()
             time.sleep(0.5)
@@ -785,6 +980,35 @@ def main(args):
                 rtde_help.goToPose(
                     rtde_help.getPoseObj(list(touch_xyz), orientation_fixed)
                 )
+            elif tap_mode:
+                bias_ft_sensor(node, ft_help)
+                gate("Press <Enter> to tap")
+                publish_event(index, EVENT_DESCEND)
+                z_contact, z_stop, peak, reason = tap_surface(
+                    node, rtde_help, ft_help, tap_watch,
+                    (touch_xyz[0], touch_xyz[1]), hover_xyz[2],
+                    orientation_fixed, args,
+                    on_event=lambda event, i=index: publish_event(i, event),
+                )
+                if z_contact is None:
+                    print("  %-6s tap: no contact, stopped at z=%.5f on %s, "
+                          "peak |Fz|=%.2f N" % (label, z_stop, reason, peak))
+                else:
+                    print("  %-6s tap: contact z=%.5f, stopped z=%.5f (%.1f mm "
+                          "in), peak |Fz|=%.2f N, stopped on %s"
+                          % (label, z_contact, z_stop,
+                             (z_contact - z_stop) * 1e3, peak, reason))
+                if reason != "force":
+                    print("  !! did not reach %.1f N at %s" % (args.tap_force, label))
+                tap_results.append([
+                    index, np.nan if z_contact is None else z_contact,
+                    z_stop, peak, TAP_REASONS.index(reason),
+                ])
+                args.tap_results = np.array(tap_results)
+                # No dwell: straight up to the travel plane for the next point.
+                rtde_help.goToPose(travel)
+                time.sleep(0.1)
+                continue
             else:
                 # Bias while clear of the surface so the descent stops on real
                 # contact rather than on any resting sensor offset.
@@ -908,12 +1132,14 @@ if __name__ == "__main__":
                         "to after each probe (m)")
     parser.add_argument(
         "--mode",
-        choices=["offset", "force"],
+        choices=["offset", "force", "tap"],
         default="offset",
         help="offset: move in x-y only, holding every waypoint --standoff above "
         "the apex plane, and never touch the sphere. force: descend at each "
         "waypoint until the FT sensor senses contact, then press "
-        "--preload-depth further. Defaults to offset, the safe one",
+        "--preload-depth further. tap: one continuous descent at --tap-speed "
+        "that stops at --tap-force and comes straight back up, a brief touch "
+        "at each waypoint. Defaults to offset, the safe one",
     )
     parser.add_argument("--standoff", type=float, default=0.010,
                         help="height above the apex plane held in offset mode (m)")
@@ -929,6 +1155,19 @@ if __name__ == "__main__":
                         help="max descent below hover before giving up (m)")
     parser.add_argument("--force-ceiling", type=float, default=8.0,
                         help="abort the preload if |Fz| reaches this (N)")
+    parser.add_argument("--tap-force", type=float, default=2.0,
+                        help="tap mode: stop the descent when |Fz| reaches "
+                        "this (N), whether or not the cup has sealed")
+    parser.add_argument("--tap-speed", type=float, default=0.010,
+                        help="tap mode: descent and retract speed (m/s). 10 mm/s "
+                        "covers a typical approach plus indentation in about "
+                        "a second")
+    parser.add_argument("--tap-acc", type=float, default=0.5,
+                        help="tap mode: acceleration (m/s^2)")
+    parser.add_argument("--max-indent", type=float, default=0.006,
+                        help="tap mode: stop if the cup goes this far past first "
+                        "contact without reaching --tap-force (m). 6 mm is the "
+                        "deepest preload used on this rig")
     parser.add_argument("--settle", type=float, default=0.05,
                         help="seconds to settle after each descent step")
     parser.add_argument("--descend-speed", type=float, default=0.01)
