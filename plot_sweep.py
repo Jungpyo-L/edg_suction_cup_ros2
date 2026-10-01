@@ -24,6 +24,10 @@ import pandas as pd
 EVENT_NAMES = {0: "travel", 1: "descend", 2: "contact", 3: "preload done",
                4: "dwell end", 5: "descend step", 6: "preload step"}
 STEP_EVENTS = (5, 6)
+# A sampled run has dozens of taps, and a panel each would be a figure metres
+# long. Past this, the per-point view is refused and the overlays are the way
+# to look at the run.
+MAX_PANELS = 12
 # Only meaningful for --radius runs, which always produce these five in this
 # order. An --offsets run has arbitrary points, so it falls back to the index.
 WAYPOINT_NAMES = {1: "center", 2: "north", 3: "west", 4: "south", 5: "east"}
@@ -143,6 +147,12 @@ def plot_panels(pressure, columns, sync, code_column, args):
     waypoints = sorted(w for w in pressure["waypoint"].unique() if w > 0)
     if not waypoints:
         raise SystemExit("No waypoint codes in the sync log - was this an old run?")
+    if len(waypoints) > MAX_PANELS:
+        raise SystemExit(
+            "%d probe points: a panel each would be a figure %d inches tall. "
+            "Use --timeline for the whole run on one axis, or "
+            "ml/inspect_run.py, which overlays the taps and groups them by "
+            "surface." % (len(waypoints), int(2.4 * len(waypoints))))
 
     figure, axes = plt.subplots(len(waypoints), 1, sharey=True,
                                 figsize=(9, 2.4 * len(waypoints)))

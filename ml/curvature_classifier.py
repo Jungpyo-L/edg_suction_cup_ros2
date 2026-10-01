@@ -3,18 +3,20 @@
 
 Reads the .mat files saved by sphere_sweep_experiment.py --mode tap, cuts one
 sample out of each tap, and trains a classifier whose label is the curvature
-of the surface tapped: 1/R for a sphere of radius R, 0 for the flat plate. The
-label is read from each run's own --radius, so nothing has to be annotated by
-hand - but check it with --list first, because a sphere run given --offsets
-instead of --radius records radius 0 and would be labelled flat.
+of the surface tapped: 1/R for a sphere of radius R, 0 for the flat plate.
+
+Labels come from the run itself - the radius recorded per tap by a --spheres
+run, otherwise the run's own --radius - so nothing has to be annotated by
+hand. Check them with --list first: a sphere run given --offsets instead of
+--radius records radius 0 and would be labelled flat.
 
     python3 ml/curvature_classifier.py --list
     python3 ml/curvature_classifier.py
     python3 ml/curvature_classifier.py --representation time
 
 Every tap becomes an array of channels x points: the pressure change in each
-chamber, the contact force, and the indentation past first contact. How the
-points are placed is the --representation:
+chamber, the indentation past first contact, and in the time representation
+the contact force as well. How the points are placed is the --representation:
 
   force  (default) the channels read off at fixed force levels on the way up
          to the stop. Pressure at 1 N means the same thing however fast the

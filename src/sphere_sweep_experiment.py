@@ -1190,14 +1190,17 @@ def yaw_grid(args):
     return np.linspace(0.0, args.yaw_span, args.yaws, endpoint=False)
 
 
-def main(args):
-    np.set_printoptions(precision=4)
-    validate_args(args)
-    yaw_plan = None
+def plan_offsets(args):
+    """Where to tap relative to the apex, and at what yaw.
+
+    Returns (spheres, yaws, labels, offsets, yaw per tap). A --spheres run has
+    no offsets here: its waypoints are absolute and need every sphere's apex,
+    which only the jog produces and only once the robot is up, so main builds
+    those later.
+    """
     spheres = parse_radii(args.spheres) if args.spheres else None
+    yaws = yaw_plan = None
     if spheres is not None:
-        # The plan needs every apex, which only the jog produces and only once
-        # the robot is up, so it is built later in main.
         yaws = yaw_grid(args)
         labels, offsets = [], []
         print("Spheres %s m, %d points each at yaw %s deg +/- %.0f - %d taps "
@@ -1230,6 +1233,137 @@ def main(args):
         labels = ["waypoint %d" % i for i in range(1, len(offsets) + 1)]
     if yaw_plan is None:
         yaw_plan = [0.0] * len(offsets)
+    return spheres, yaws, labels, offsets, yaw_plan
+
+
+def resolve_single_apex(args, apex_listener, rtde_help, orientation):
+    """The apex for a one-surface run: typed, saved, or from the detector.
+
+    Applies --apex-offset, runs --jog-apex when asked, and records on args
+    what it ended up using, so the .mat says which apex the run actually
+    probed - a jogged apex exists nowhere else.
+    """
+    if args.apex is not None:
+        # Vision bypassed entirely. Some targets return no depth at all - a
+        # smooth, glossy, dark sphere gives the stereo matcher nothing to
+        # match, and the IR projector reflects off it rather than scattering
+        # back - so the detector never sees them however the crop is set.
+        apex_text = args.apex.strip()
+        if apex_text == "last":
+            apex_text = read_apex(args.radius)
+            print("Loaded saved apex %s for radius %s m from %s"
+                  % (apex_text, apex_key(args.radius), APEX_STORE))
+        apex = np.asarray(parse_offsets(apex_text)[0], dtype=float)
+        apex_frame = "manual"
+        print("Using the apex given on the command line: x=%.5f y=%.5f z=%.5f"
+              % tuple(apex))
+        print("Vision is not consulted, so realsense_sphere_detector.py does "
+              "not need to be running.")
+    else:
+        print("Waiting for a settled sphere apex estimate...")
+        apex = apex_listener.wait_for_apex(args.apex_samples, args.apex_timeout)
+        apex_frame = apex_listener.frame_id
+        print("Sphere apex (%s): x=%.5f y=%.5f z=%.5f"
+              % ((apex_frame,) + tuple(apex)))
+
+    apex_vision = np.asarray(apex, dtype=float)
+    args.apex_source = apex_frame
+
+    offset_text = args.apex_offset.strip()
+    if args.apex is not None and offset_text not in ("", "0,0,0"):
+        # The saved offset corrects the camera, and there is no camera in this
+        # path. Applying it to a hand-entered apex would move the arm away
+        # from the number that was typed.
+        print("Ignoring --apex-offset: it corrects the vision estimate, and "
+              "--apex replaces it.")
+        offset_text = "0,0,0"
+    if offset_text == "last":
+        offset_text = read_apex_offset()
+        print("Loaded saved apex offset %s from %s"
+              % (offset_text, APEX_OFFSET_FILE))
+    apex_offset = np.asarray(parse_offsets(offset_text)[0], dtype=float)
+    if np.any(apex_offset):
+        apex = apex_vision + apex_offset
+        print("Applied apex offset %s -> x=%.5f y=%.5f z=%.5f"
+              % (np.round(apex_offset, 5), apex[0], apex[1], apex[2]))
+
+    if args.jog_apex:
+        if args.dry_run:
+            print("--jog-apex needs the robot, and --dry-run does not start "
+                  "it. Skipping the jog.")
+        else:
+            apex = jog_to_apex(rtde_help, apex, orientation, args)
+            # Save the total correction from the vision estimate, not just the
+            # part added by hand, so --apex-offset last reproduces this run's
+            # apex from a fresh vision reading.
+            write_apex_offset(np.asarray(apex, dtype=float) - apex_vision)
+            write_apex(args.radius, np.asarray(apex, dtype=float))
+
+    apex = np.asarray(apex, dtype=float)
+    args.apex_vision = [float(v) for v in apex_vision]
+    args.apex_used = [float(v) for v in apex]
+    args.apex_correction = [float(v) for v in (apex - apex_vision)]
+    return apex, apex_frame
+
+
+def build_waypoints(apex, labels, offsets, args):
+    """Absolute touch poses for a single-apex run, one per offset."""
+    waypoints = []
+    for label, (dx, dy, dz) in zip(labels, offsets):
+        # Outside offset mode this is the predicted surface height, used only
+        # to place the hover pose; the real touch z comes from the FT sensor.
+        if args.mode == "offset":
+            dz_final = dz + args.standoff
+        else:
+            dz_final = dz - surface_drop(args.radius, dx, dy)
+        touch_xyz = apex + np.array([dx, dy, dz_final])
+        # Tolerance so a waypoint sitting exactly on the limit is not rejected
+        # by floating-point error in the norm.
+        distance = float(np.linalg.norm(touch_xyz - apex))
+        if distance > args.max_offset + 1e-9:
+            raise ValueError(
+                "Waypoint %s (%.3f, %.3f, %.3f) is %.3f m from the apex, "
+                "beyond the --max-offset safety limit of %.3f m."
+                % (label, dx, dy, dz, distance, args.max_offset))
+        waypoints.append(touch_xyz)
+    return waypoints
+
+
+def print_planned_poses(labels, offsets, waypoints, spheres, apex_frame, args):
+    if args.mode == "offset":
+        print("Planned poses (%s), all %.1f mm above the apex plane:"
+              % (apex_frame, args.standoff * 1e3))
+    else:
+        print("Predicted surface points (%s); actual touch z is found by the "
+              "FT sensor:" % apex_frame)
+    if spheres is None:
+        for label, offset, touch_xyz in zip(labels, offsets, waypoints):
+            print("  %-6s offset %s -> %s"
+                  % (label, np.array(offset), np.round(touch_xyz, 5)))
+    else:
+        for label, row, touch_xyz in zip(labels, args.tap_plan, waypoints):
+            print("  %-12s offset %s yaw %3.0f -> %s"
+                  % (label, np.round(row[:2], 4), row[2],
+                     np.round(touch_xyz, 5)))
+
+
+def report_tap(label, z_contact, z_stop, peak, reason, tap_force):
+    if z_contact is None:
+        print("  %-12s tap: no contact, stopped at z=%.5f on %s, peak |Fz|=%.2f N"
+              % (label, z_stop, reason, peak))
+    else:
+        print("  %-12s tap: contact z=%.5f, stopped z=%.5f (%.1f mm in), "
+              "peak |Fz|=%.2f N, stopped on %s"
+              % (label, z_contact, z_stop, (z_contact - z_stop) * 1e3, peak,
+                 reason))
+    if reason != "force":
+        print("  !! did not reach %.1f N at %s" % (tap_force, label))
+
+
+def main(args):
+    np.set_printoptions(precision=4)
+    validate_args(args)
+    spheres, yaws, labels, offsets, yaw_plan = plan_offsets(args)
 
     offset_mode = args.mode == "offset"
     tap_mode = args.mode == "tap"
@@ -1325,114 +1459,16 @@ def main(args):
             for radius, jitter in jitters:
                 print("  %s m sphere: points within %.1f mm of its apex"
                       % (apex_key(radius), jitter * 1e3))
-        elif args.apex is not None:
-            # Vision bypassed entirely. Some targets return no depth at all -
-            # a smooth, glossy, dark sphere gives the stereo matcher nothing to
-            # match, and the IR projector reflects off it rather than scattering
-            # back - so the detector never sees them however the crop is set.
-            apex_text = args.apex.strip()
-            if apex_text == "last":
-                apex_text = read_apex(args.radius)
-                print("Loaded saved apex %s for radius %s m from %s"
-                      % (apex_text, apex_key(args.radius), APEX_STORE))
-            apex = np.asarray(parse_offsets(apex_text)[0], dtype=float)
-            apex_frame = "manual"
-            print("Using the apex given on the command line: x=%.5f y=%.5f z=%.5f"
-                  % tuple(apex))
-            print("Vision is not consulted, so realsense_sphere_detector.py does "
-                  "not need to be running.")
         else:
-            print("Waiting for a settled sphere apex estimate...")
-            apex = apex_listener.wait_for_apex(args.apex_samples, args.apex_timeout)
-            apex_frame = apex_listener.frame_id
-            print("Sphere apex (%s): x=%.5f y=%.5f z=%.5f"
-                  % ((apex_frame,) + tuple(apex)))
-
-        # Only the single-apex paths have a vision estimate to correct, an
-        # offset to apply or one apex to record; --spheres resolved all of
-        # theirs above, and running this would jog them a second time.
-        if spheres is None:
-            apex_vision = np.asarray(apex, dtype=float)
-            args.apex_source = apex_frame
-
-            offset_text = args.apex_offset.strip()
-            if args.apex is not None and offset_text not in ("", "0,0,0"):
-                # The saved offset corrects the camera, and there is no camera in
-                # this path. Applying it to a hand-entered apex would move the arm
-                # away from the number that was typed.
-                print("Ignoring --apex-offset: it corrects the vision estimate, and "
-                      "--apex replaces it.")
-                offset_text = "0,0,0"
-            if offset_text == "last":
-                offset_text = read_apex_offset()
-                print("Loaded saved apex offset %s from %s"
-                      % (offset_text, APEX_OFFSET_FILE))
-            apex_offset = np.asarray(parse_offsets(offset_text)[0], dtype=float)
-            if np.any(apex_offset):
-                apex = apex_vision + apex_offset
-                print("Applied apex offset %s -> x=%.5f y=%.5f z=%.5f"
-                      % (np.round(apex_offset, 5), apex[0], apex[1], apex[2]))
-
-            if args.jog_apex:
-                if args.dry_run:
-                    print("--jog-apex needs the robot, and --dry-run does not start "
-                          "it. Skipping the jog.")
-                else:
-                    apex = jog_to_apex(rtde_help, apex, orientation_fixed, args)
-                    # Save the total correction from the vision estimate, not just
-                    # the part added by hand, so --apex-offset last reproduces this
-                    # run's apex from a fresh vision reading.
-                    write_apex_offset(np.asarray(apex, dtype=float) - apex_vision)
-                    write_apex(args.radius, np.asarray(apex, dtype=float))
-
-            # Recorded onto args so they land in the .mat alongside everything else:
-            # a sweep is not interpretable later without knowing which apex it
-            # actually probed, and a jogged apex exists nowhere else.
-            args.apex_vision = [float(v) for v in apex_vision]
-            args.apex_used = [float(v) for v in np.asarray(apex, dtype=float)]
-            args.apex_correction = [float(v) for v in
-                                    (np.asarray(apex, dtype=float) - apex_vision)]
-
+            apex, apex_frame = resolve_single_apex(args, apex_listener,
+                                                   rtde_help, orientation_fixed)
 
         if spheres is not None:
-            # Already absolute: each one was built from its own sphere's apex.
+            # Already absolute: each was built from its own sphere's apex.
             waypoints = list(sphere_waypoints)
         else:
-            waypoints = []
-            for label, (dx, dy, dz) in zip(labels, offsets):
-                # In descend mode this is the predicted surface height, used only
-                # to place the hover pose; the real touch z comes from the FT
-                # sensor.
-                if offset_mode:
-                    dz_final = dz + args.standoff
-                else:
-                    dz_final = dz - surface_drop(args.radius, dx, dy)
-                touch_xyz = apex + np.array([dx, dy, dz_final])
-                # Tolerance so a waypoint sitting exactly on the limit is not
-                # rejected by floating-point error in the norm.
-                distance = float(np.linalg.norm(touch_xyz - apex))
-                if distance > args.max_offset + 1e-9:
-                    raise ValueError(
-                        "Waypoint %s (%.3f, %.3f, %.3f) is %.3f m from the apex, "
-                        "beyond the --max-offset safety limit of %.3f m."
-                        % (label, dx, dy, dz, distance, args.max_offset))
-                waypoints.append(touch_xyz)
-
-        if offset_mode:
-            print("Planned poses (%s), all %.1f mm above the apex plane:"
-                  % (apex_frame, args.standoff * 1e3))
-        else:
-            print("Predicted surface points (%s); actual touch z is found by the "
-                  "FT sensor:" % apex_frame)
-        if spheres is None:
-            for label, offset, touch_xyz in zip(labels, offsets, waypoints):
-                print("  %-6s offset %s -> %s"
-                      % (label, np.array(offset), np.round(touch_xyz, 5)))
-        else:
-            for label, row, touch_xyz in zip(labels, args.tap_plan, waypoints):
-                print("  %-12s offset %s yaw %3.0f -> %s"
-                      % (label, np.round(row[:2], 4), row[2],
-                         np.round(touch_xyz, 5)))
+            waypoints = build_waypoints(apex, labels, offsets, args)
+        print_planned_poses(labels, offsets, waypoints, spheres, apex_frame, args)
         if args.dry_run:
             print("Dry run: no robot motion commanded.")
             return
@@ -1515,16 +1551,8 @@ def main(args):
                     on_event=lambda event, i=index: sync_pub.publish(
                         Int16(data=i * 10 + event)),
                 )
-                if z_contact is None:
-                    print("  %-6s tap: no contact, stopped at z=%.5f on %s, "
-                          "peak |Fz|=%.2f N" % (label, z_stop, reason, peak))
-                else:
-                    print("  %-6s tap: contact z=%.5f, stopped z=%.5f (%.1f mm "
-                          "in), peak |Fz|=%.2f N, stopped on %s"
-                          % (label, z_contact, z_stop,
-                             (z_contact - z_stop) * 1e3, peak, reason))
-                if reason != "force":
-                    print("  !! did not reach %.1f N at %s" % (args.tap_force, label))
+                report_tap(label, z_contact, z_stop, peak, reason,
+                           args.tap_force)
                 tap_results.append([
                     index, np.nan if z_contact is None else z_contact,
                     z_stop, peak, TAP_REASONS.index(reason),
