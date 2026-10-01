@@ -159,48 +159,77 @@ def first_time(run, code):
     return float(hits[0]) if hits.size else None
 
 
+def tap_signals(run, waypoint):
+    """One tap, with every channel zeroed on its own pre-contact baseline.
+
+    Returns (signals, None), or (None, reason) when the tap cannot be used.
+    `signals` carries the three times that bound the tap, the contact force
+    oriented so pressing reads positive, each chamber's pressure change, and
+    the indentation past contact when the arm's height was logged.
+
+    The dataset and the inspector both cut taps out through here, so they
+    cannot drift apart over what counts as a tap or where its baseline came
+    from.
+    """
+    t_desc = first_time(run, waypoint * 10 + EVENT_DESCEND)
+    t_contact = first_time(run, waypoint * 10 + EVENT_CONTACT)
+    t_stop = first_time(run, waypoint * 10 + EVENT_STOP)
+    if t_contact is None:
+        return None, "no contact"
+    if t_stop is None:
+        return None, "unfinished"
+
+    def baseline(t, values):
+        inside = (t >= t_desc) & (t <= t_contact - BASELINE_GUARD)
+        if inside.sum() < MIN_BASELINE_SAMPLES:
+            return None
+        return float(np.median(values[inside]))
+
+    force_base = baseline(run["ft_t"], run["fz"])
+    pressure_bases = [baseline(run["p_t"], p) for p in run["pressure"]]
+    if force_base is None or any(b is None for b in pressure_bases):
+        return None, "no pre-contact baseline - hover too low?"
+
+    force = run["fz"] - force_base
+    # Compression reads negative or positive depending on how the sensor is
+    # mounted. Orient it so the load at the stop is positive.
+    if np.interp(t_stop, run["ft_t"], force) < 0:
+        force = -force
+
+    signals = {
+        "t_desc": t_desc,
+        "t_contact": t_contact,
+        "t_stop": t_stop,
+        "force": force,
+        "pressures": [p - b for p, b in zip(run["pressure"], pressure_bases)],
+    }
+    if "z" in run:
+        signals["depth"] = np.interp(t_contact, run["z_t"], run["z"]) - run["z"]
+    return signals, None
+
+
 def extract_taps(run, args):
-    """One (waypoint, array) per usable tap in the run, plus the reasons for
-    any that were skipped."""
+    """One (waypoint, channels x points array) per usable tap in the run, plus
+    the reasons for any that were skipped."""
     samples, skipped = [], []
     waypoints = sorted({code // 10 for code in run["sync_code"]
                         if code % 10 == EVENT_DESCEND})
     has_z = "z" in run
+    grid = (np.linspace(args.force_min, args.force_max, args.points)
+            if args.representation == "force"
+            else np.linspace(-args.pre, args.post, args.points))
     for waypoint in waypoints:
         # A --repeat run tapped scattered points around the apex, all of them
         # wanted; the waypoint filter is for the fixed five-point layout, where
         # waypoints 2-5 sit on a 30 degree slope.
         if args.waypoints and not run["repeat"] and waypoint not in args.waypoints:
             continue
-        t_desc = first_time(run, waypoint * 10 + EVENT_DESCEND)
-        t_contact = first_time(run, waypoint * 10 + EVENT_CONTACT)
-        t_stop = first_time(run, waypoint * 10 + EVENT_STOP)
-        if t_contact is None:
-            skipped.append((waypoint, "no contact"))
+        signals, problem = tap_signals(run, waypoint)
+        if problem is not None:
+            skipped.append((waypoint, problem))
             continue
-        if t_stop is None:
-            skipped.append((waypoint, "unfinished"))
-            continue
-
-        def baseline(t, values):
-            inside = (t >= t_desc) & (t <= t_contact - BASELINE_GUARD)
-            return float(np.median(values[inside])) if inside.sum() >= MIN_BASELINE_SAMPLES else None
-
-        f_base = baseline(run["ft_t"], run["fz"])
-        p_bases = [baseline(run["p_t"], p) for p in run["pressure"]]
-        if f_base is None or any(b is None for b in p_bases):
-            skipped.append((waypoint, "no pre-contact baseline - hover too low?"))
-            continue
-
-        force = run["fz"] - f_base
-        # Compression reads negative or positive depending on how the sensor is
-        # mounted. Orient it so the load at the stop is positive.
-        at_stop = np.interp(t_stop, run["ft_t"], force)
-        if at_stop < 0:
-            force = -force
-        pressures = [p - b for p, b in zip(run["pressure"], p_bases)]
-        if has_z:
-            depth = np.interp(t_contact, run["z_t"], run["z"]) - run["z"]
+        t_contact, t_stop = signals["t_contact"], signals["t_stop"]
+        force = signals["force"]
 
         if args.representation == "force":
             loading = (run["ft_t"] >= t_contact - 0.05) & (run["ft_t"] <= t_stop)
@@ -217,19 +246,17 @@ def extract_taps(run, args):
                                 % (f_mono[-1], args.force_max)))
                 continue
             levels, first = np.unique(f_mono, return_index=True)
-            grid = np.linspace(args.force_min, args.force_max, args.points)
             t_eval = np.interp(grid, levels, t_load[first])
         else:
-            grid = np.linspace(-args.pre, args.post, args.points)
             # Clamped to the tap: past the stop the logged data is either cut
             # away or is the retract, and neither belongs to the touch.
-            t_eval = np.clip(t_contact + grid, t_desc, t_stop)
+            t_eval = np.clip(t_contact + grid, signals["t_desc"], t_stop)
 
-        rows = [np.interp(t_eval, run["p_t"], p) for p in pressures]
+        rows = [np.interp(t_eval, run["p_t"], p) for p in signals["pressures"]]
         if args.representation == "time":
             rows.append(np.interp(t_eval, run["ft_t"], force))
         if has_z:
-            rows.append(np.interp(t_eval, run["z_t"], depth))
+            rows.append(np.interp(t_eval, run["z_t"], signals["depth"]))
         samples.append((waypoint, np.vstack(rows)))
     return samples, skipped
 
@@ -244,7 +271,16 @@ def channel_names(args, has_z):
 
 
 def class_name(kappa):
-    return "flat" if kappa == 0 else "R %.0f mm" % (1e3 / kappa)
+    """The label a curvature is classified under.
+
+    A tenth of a millimetre of radius, so two spheres close in size cannot end
+    up sharing a label and being merged into one class.
+    """
+    if kappa == 0:
+        return "flat"
+    radius_mm = 1e3 / kappa
+    digits = 0 if abs(radius_mm - round(radius_mm)) < 0.05 else 1
+    return "R %.*f mm" % (digits, radius_mm)
 
 
 def build_dataset(args):
@@ -274,7 +310,7 @@ def build_dataset(args):
             if not has_z and "z" in run:
                 array = array[:-1]
             X.append(array)
-            y.append(round(kappa, 6))
+            y.append(kappa)
             groups.append(group)
             plan = run["plan"]
             if plan is not None and waypoint - 1 < len(plan):
@@ -342,11 +378,11 @@ def evaluate(name, model, features, labels, groups, classes):
     print("%s: accuracy %.1f%%, balanced accuracy %.1f%%, leaving one run out "
           "at a time" % (name, accuracy * 1e2, balanced * 1e2))
     matrix = confusion_matrix(labels, predicted, labels=classes)
-    width = max(len(name) for name in classes) + 2
+    width = max(len(label) for label in classes) + 2
     print(" " * width + "predicted ->")
-    print(" " * width + "".join("%*s" % (width, name) for name in classes))
-    for name, row in zip(classes, matrix):
-        print("%*s" % (width, name) + "".join("%*d" % (width, n) for n in row))
+    print(" " * width + "".join("%*s" % (width, label) for label in classes))
+    for label, row in zip(classes, matrix):
+        print("%*s" % (width, label) + "".join("%*d" % (width, n) for n in row))
 
 
 def main(args):

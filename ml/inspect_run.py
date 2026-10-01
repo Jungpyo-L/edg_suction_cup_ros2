@@ -26,9 +26,8 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from curvature_classifier import (BASELINE_GUARD, EVENT_CONTACT, EVENT_DESCEND,
-                                  EVENT_STOP, MIN_BASELINE_SAMPLES, class_name,
-                                  curvature_of, first_time, load_run)
+from curvature_classifier import (EVENT_DESCEND, class_name, curvature_of,
+                                  load_run, tap_signals)
 
 # From the validated reference palette. Chambers are an identity, so they take
 # categorical slots 1-3; curvature is a magnitude, so the classes take one hue
@@ -41,58 +40,42 @@ MUTED = "#6b6a63"
 
 
 def tap_curves(run, channels):
-    """One dict per tap: force, chamber pressure changes and indentation,
-    measured from the baseline taken before contact."""
+    """One dict per tap, holding the whole curve rather than a fixed grid:
+    force and each channel from contact to the stop, plus where the tap was
+    and how it ended."""
     curves, skipped = [], []
     waypoints = sorted({c // 10 for c in run["sync_code"] if c % 10 == EVENT_DESCEND})
     for waypoint in waypoints:
-        t_desc = first_time(run, waypoint * 10 + EVENT_DESCEND)
-        t_contact = first_time(run, waypoint * 10 + EVENT_CONTACT)
-        t_stop = first_time(run, waypoint * 10 + EVENT_STOP)
-        if t_contact is None or t_stop is None:
-            skipped.append((waypoint, "no contact" if t_contact is None else "unfinished"))
+        signals, problem = tap_signals(run, waypoint)
+        if problem is not None:
+            skipped.append((waypoint, problem))
             continue
-
-        def baseline(t, values):
-            inside = (t >= t_desc) & (t <= t_contact - BASELINE_GUARD)
-            if inside.sum() < MIN_BASELINE_SAMPLES:
-                return None
-            return float(np.median(values[inside]))
-
-        f_base = baseline(run["ft_t"], run["fz"])
-        p_bases = [baseline(run["p_t"], p) for p in run["pressure"]]
-        if f_base is None or any(b is None for b in p_bases):
-            skipped.append((waypoint, "no pre-contact baseline"))
-            continue
-
-        force = run["fz"] - f_base
-        if np.interp(t_stop, run["ft_t"], force) < 0:
-            force = -force
-        window = (run["ft_t"] >= t_contact) & (run["ft_t"] <= t_stop)
+        t_contact, t_stop = signals["t_contact"], signals["t_stop"]
+        times = run["ft_t"]
+        window = (times >= t_contact) & (times <= t_stop)
         if window.sum() < 3:
             skipped.append((waypoint, "too few force samples"))
             continue
 
         plan = run.get("plan")
-        yaw = float(plan[waypoint - 1][2]) if plan is not None and waypoint - 1 < len(plan) else float("nan")
-        offset = (np.hypot(*plan[waypoint - 1][:2]) if plan is not None
-                  and waypoint - 1 < len(plan) else float("nan"))
+        row = plan[waypoint - 1] if plan is not None and waypoint - 1 < len(plan) else None
+        force = signals["force"][window]
         curve = {
             "waypoint": waypoint,
             "kappa": curvature_of(run, waypoint),
-            "t": run["ft_t"][window] - t_contact,
-            "force": np.maximum.accumulate(force[window]),
-            "raw_force": force[window],
-            "yaw": yaw,
-            "offset": offset,
+            "t": times[window] - t_contact,
+            # Monotone, so each force level maps to one moment of the tap.
+            "force": np.maximum.accumulate(force),
+            "raw_force": force,
+            "yaw": float(row[2]) if row is not None else float("nan"),
+            "offset": float(np.hypot(*row[:2])) if row is not None else float("nan"),
             "duration": t_stop - t_contact,
-            "peak": float(np.max(force[window])),
+            "peak": float(np.max(force)),
         }
-        for index, (p, base) in enumerate(zip(run["pressure"], p_bases)):
-            curve["dp%d" % index] = np.interp(run["ft_t"][window], run["p_t"], p - base)
-        if "z" in run:
-            z_contact = np.interp(t_contact, run["z_t"], run["z"])
-            curve["depth"] = z_contact - np.interp(run["ft_t"][window], run["z_t"], run["z"])
+        for index, pressure in enumerate(signals["pressures"]):
+            curve["dp%d" % index] = np.interp(times[window], run["p_t"], pressure)
+        if "depth" in signals:
+            curve["depth"] = np.interp(times[window], run["z_t"], signals["depth"])
         curves.append(curve)
     return curves, skipped
 
@@ -107,7 +90,7 @@ def on_force_grid(curve, key, grid):
     return np.where(grid <= force[-1], out, np.nan)
 
 
-def digest(path, run, curves, skipped, channels):
+def digest(path, curves, skipped, channels):
     print("%s" % os.path.basename(path))
     print("  %d taps kept%s"
           % (len(curves),
@@ -151,7 +134,7 @@ def style(axis):
     axis.tick_params(colors=MUTED, labelsize=8)
 
 
-def plot_one_run(path, run, curves, channels, grid, args):
+def plot_one_run(path, curves, channels, grid, args):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -206,7 +189,7 @@ def plot_one_run(path, run, curves, channels, grid, args):
     return figure
 
 
-def plot_classes(by_class, channels, grid, args):
+def plot_classes(by_class, channels, grid):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -276,19 +259,19 @@ def main(args):
             print("%s\n  skipped: %s" % (os.path.basename(path), problem))
             continue
         curves, skipped = tap_curves(run, args.channels)
-        digest(path, run, curves, skipped, args.channels)
+        digest(path, curves, skipped, args.channels)
         if curves:
             for curve in curves:
                 by_class.setdefault(curve["kappa"], []).append(curve)
-            loaded.append((path, run, curves))
+            loaded.append((path, curves))
     if not loaded:
         sys.exit("Nothing to plot.")
 
     if args.run:
-        path, run, curves = loaded[-1]
-        figure = plot_one_run(path, run, curves, args.channels, grid, args)
+        path, curves = loaded[-1]
+        figure = plot_one_run(path, curves, args.channels, grid, args)
     else:
-        figure = plot_classes(by_class, args.channels, grid, args)
+        figure = plot_classes(by_class, args.channels, grid)
 
     out = os.path.expanduser(args.save)
     os.makedirs(os.path.dirname(out), exist_ok=True)
