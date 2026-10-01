@@ -403,16 +403,28 @@ class ApexListener:
         return samples.mean(axis=0)
 
 
-def sampling_plan(count, jitter, yaws, seed):
+def sampling_plan(count, jitter, yaws, seed, yaw_jitter=0.0, yaw_span=120.0):
     """`count` contact points within `jitter` of the apex, each tapped at every
     yaw angle, in a shuffled order.
 
     Returns (labels, offsets, yaw per tap).
 
-    The radius is drawn uniformly rather than uniformly by area. What is being
-    covered is the surface tilt under the cup, which grows with distance from
-    the apex; sampling by area would crowd the outer ring and leave the
-    near-apex tilts thin.
+    The apex itself is always the first point. It is the one place on the
+    sphere whose geometry is known exactly rather than sampled, it is where
+    the jog put the cup, and it is the only contact common to every surface
+    including the flat plate.
+
+    The radius of the others is drawn uniformly rather than uniformly by area.
+    What is being covered is the surface tilt under the cup, which grows with
+    distance from the apex; sampling by area would crowd the outer ring and
+    leave the near-apex tilts thin.
+
+    Each yaw is dithered within +/- `yaw_jitter` of its grid angle, wrapped
+    into the span. The grid alone would mean that however many runs are
+    recorded, the cup is only ever seen at the same handful of rotations, and
+    anything used at an angle between them meets something it has never seen.
+    Dithering covers the whole range while keeping the yaws balanced, which
+    drawing them at random would not.
 
     The order is shuffled so that anything drifting through the session - the
     lip taking a set, the sphere shifting on its mount - cannot line up with
@@ -421,10 +433,16 @@ def sampling_plan(count, jitter, yaws, seed):
     """
     rng = np.random.default_rng(seed)
     plan = []
-    for _ in range(count):
-        radius = jitter * rng.random()
-        angle = 2.0 * np.pi * rng.random()
+    for index in range(count):
+        if index == 0:
+            radius = 0.0
+            angle = 0.0
+        else:
+            radius = jitter * rng.random()
+            angle = 2.0 * np.pi * rng.random()
         for yaw in yaws:
+            if yaw_jitter > 0.0:
+                yaw = (yaw + rng.uniform(-yaw_jitter, yaw_jitter)) % yaw_span
             plan.append((radius * np.cos(angle), radius * np.sin(angle), yaw))
     plan = [plan[i] for i in rng.permutation(len(plan))]
     labels = ["tap %d" % (i + 1) for i in range(len(plan))]
@@ -916,6 +934,7 @@ def validate_args(args):
         "--repeat": args.repeat,
         "--jitter": args.jitter,
         "--yaw-span": args.yaw_span,
+        "--yaw-jitter": 0.0 if args.yaw_jitter is None else args.yaw_jitter,
         "--standoff": args.standoff,
         "--preload-depth": args.preload_depth,
         "--hover-height": args.hover_height,
@@ -1007,12 +1026,18 @@ def main(args):
         if args.seed is None:
             args.seed = int.from_bytes(os.urandom(4), "big")
         yaws = np.linspace(0.0, args.yaw_span, args.yaws, endpoint=False)
-        labels, offsets, yaw_plan = sampling_plan(args.repeat, args.jitter,
-                                                  yaws, args.seed)
-        print("Repeat mode: %d points within %.1f mm of the apex, each tapped "
-              "at yaw %s deg - %d taps, shuffled, seed %d."
-              % (args.repeat, args.jitter * 1e3,
-                 "/".join("%.0f" % y for y in yaws), len(offsets), args.seed))
+        if args.yaw_jitter is None:
+            # Half a grid step: enough that the dithered angles of neighbouring
+            # grid points meet, so the whole span is covered across runs.
+            args.yaw_jitter = args.yaw_span / (2.0 * args.yaws)
+        labels, offsets, yaw_plan = sampling_plan(
+            args.repeat, args.jitter, yaws, args.seed, args.yaw_jitter,
+            args.yaw_span)
+        print("Repeat mode: the apex plus %d points within %.1f mm of it, each "
+              "tapped at yaw %s deg +/- %.0f - %d taps, shuffled, seed %d."
+              % (args.repeat - 1, args.jitter * 1e3,
+                 "/".join("%.0f" % y for y in yaws), args.yaw_jitter,
+                 len(offsets), args.seed))
         args.tap_plan = np.array([[dx, dy, yaw] for (dx, dy, _), yaw
                                   in zip(offsets, yaw_plan)])
     elif args.radius > 0.0:
@@ -1508,9 +1533,15 @@ if __name__ == "__main__":
                         help="--repeat: furthest a contact point may sit from "
                         "the apex (m). On a sphere of radius R, R/3 puts the "
                         "steepest tap on a 19.5 degree slope")
-    parser.add_argument("--yaws", type=int, default=1,
+    parser.add_argument("--yaws", type=int, default=6,
                         help="--repeat: how many yaw angles to tap each point "
-                        "at, evenly spaced over --yaw-span")
+                        "at, evenly spaced over --yaw-span. 6 gives a 20 degree "
+                        "grid, about 3 s a tap")
+    parser.add_argument("--yaw-jitter", type=float, default=None,
+                        help="--repeat: each tap's yaw is dithered this far "
+                        "either side of its grid angle (deg). Defaults to half "
+                        "a grid step, so the whole span is covered across runs "
+                        "while the yaws stay balanced. 0 pins them to the grid")
     parser.add_argument("--yaw-span", type=float, default=120.0,
                         help="--repeat: range of cup rotation covered (deg). "
                         "120 is one chamber spacing, so with three identical "
