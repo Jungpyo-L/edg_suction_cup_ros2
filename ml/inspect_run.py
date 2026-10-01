@@ -28,7 +28,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from curvature_classifier import (BASELINE_GUARD, EVENT_CONTACT, EVENT_DESCEND,
                                   EVENT_STOP, MIN_BASELINE_SAMPLES, class_name,
-                                  first_time, load_run)
+                                  curvature_of, first_time, load_run)
 
 # From the validated reference palette. Chambers are an identity, so they take
 # categorical slots 1-3; curvature is a magnitude, so the classes take one hue
@@ -79,6 +79,7 @@ def tap_curves(run, channels):
                   and waypoint - 1 < len(plan) else float("nan"))
         curve = {
             "waypoint": waypoint,
+            "kappa": curvature_of(run, waypoint),
             "t": run["ft_t"][window] - t_contact,
             "force": np.maximum.accumulate(force[window]),
             "raw_force": force[window],
@@ -107,14 +108,19 @@ def on_force_grid(curve, key, grid):
 
 
 def digest(path, run, curves, skipped, channels):
-    kappa = 1.0 / run["radius"] if run["radius"] > 0 else 0.0
     print("%s" % os.path.basename(path))
-    print("  surface %s, %d taps kept%s"
-          % (class_name(kappa), len(curves),
+    print("  %d taps kept%s"
+          % (len(curves),
              ", %d skipped (%s)" % (len(skipped), "; ".join("wp%d %s" % s for s in skipped))
              if skipped else ""))
-    if not curves:
-        return
+    # One run can cover several spheres bolted down together, and pooling their
+    # numbers would hide the very difference being looked for.
+    for kappa in sorted({c["kappa"] for c in curves}):
+        digest_surface(kappa, [c for c in curves if c["kappa"] == kappa], channels)
+
+
+def digest_surface(kappa, curves, channels):
+    print("  %s, %d taps" % (class_name(kappa), len(curves)))
     peaks = np.array([c["peak"] for c in curves])
     durations = np.array([c["duration"] for c in curves]) * 1e3
     print("  peak force   %.2f N median, %.2f to %.2f" % (np.median(peaks), peaks.min(), peaks.max()))
@@ -151,7 +157,7 @@ def plot_one_run(path, run, curves, channels, grid, args):
     import matplotlib.pyplot as plt
 
     figure, axes = plt.subplots(1, 3, figsize=(13, 4.2), facecolor=SURFACE)
-    kappa = 1.0 / run["radius"] if run["radius"] > 0 else 0.0
+    surfaces = ", ".join(class_name(k) for k in sorted({c["kappa"] for c in curves}))
 
     axis = axes[0]
     for index in range(len(channels)):
@@ -194,7 +200,7 @@ def plot_one_run(path, run, curves, channels, grid, args):
     axis.set_xlabel("force (N)", fontsize=9, color=MUTED)
     style(axis)
 
-    figure.suptitle("%s - %s, %d taps" % (os.path.basename(path), class_name(kappa), len(curves)),
+    figure.suptitle("%s - %s, %d taps" % (os.path.basename(path), surfaces, len(curves)),
                     x=0.01, ha="left", fontsize=11, color=INK)
     figure.tight_layout(rect=(0, 0, 1, 0.94))
     return figure
@@ -272,8 +278,8 @@ def main(args):
         curves, skipped = tap_curves(run, args.channels)
         digest(path, run, curves, skipped, args.channels)
         if curves:
-            kappa = round(1.0 / run["radius"] if run["radius"] > 0 else 0.0, 6)
-            by_class.setdefault(kappa, []).extend(curves)
+            for curve in curves:
+                by_class.setdefault(curve["kappa"], []).append(curve)
             loaded.append((path, run, curves))
     if not loaded:
         sys.exit("Nothing to plot.")

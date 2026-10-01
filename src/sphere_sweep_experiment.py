@@ -234,11 +234,14 @@ def jog_to_apex(rtde_help, apex, orientation, args):
             continue
 
         moved = target + np.asarray(direction) * step
+        # A jog may have to cross to another sphere, which --max-offset, the
+        # limit on where a waypoint may sit, is far too tight for.
+        limit = args.max_offset if args.jog_range is None else args.jog_range
         lateral = float(np.linalg.norm((moved - start)[:2]))
-        if lateral > args.max_offset:
-            print("  refusing to jog more than %.0f mm sideways from the "
-                  "starting apex; it is %.0f mm out already. Raise --max-offset."
-                  % (args.max_offset * 1e3, lateral * 1e3))
+        if lateral > limit:
+            print("  refusing to jog more than %.0f mm sideways from where this "
+                  "jog started; it is %.0f mm out already. Raise --jog-range."
+                  % (limit * 1e3, lateral * 1e3))
             continue
 
         target = moved
@@ -403,7 +406,8 @@ class ApexListener:
         return samples.mean(axis=0)
 
 
-def sampling_plan(count, jitter, yaws, seed, yaw_jitter=0.0, yaw_span=120.0):
+def sampling_plan(count, jitter, yaws, seed, yaw_jitter=0.0, yaw_span=120.0,
+                  shuffle=True):
     """`count` contact points within `jitter` of the apex, each tapped at every
     yaw angle, in a shuffled order.
 
@@ -444,10 +448,137 @@ def sampling_plan(count, jitter, yaws, seed, yaw_jitter=0.0, yaw_span=120.0):
             if yaw_jitter > 0.0:
                 yaw = (yaw + rng.uniform(-yaw_jitter, yaw_jitter)) % yaw_span
             plan.append((radius * np.cos(angle), radius * np.sin(angle), yaw))
-    plan = [plan[i] for i in rng.permutation(len(plan))]
+    if shuffle:
+        plan = [plan[i] for i in rng.permutation(len(plan))]
     labels = ["tap %d" % (i + 1) for i in range(len(plan))]
     offsets = [(dx, dy, 0.0) for dx, dy, _ in plan]
     return labels, offsets, [yaw for _, _, yaw in plan]
+
+
+def parse_radii(text):
+    """The --spheres list, as metres."""
+    radii = []
+    for piece in text.replace(";", ",").split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        value = float(piece)
+        if value < 0.0:
+            raise ValueError("--spheres radii cannot be negative, got %s" % value)
+        radii.append(value)
+    if not radii:
+        raise ValueError("--spheres was given nothing to run.")
+    if len(set(apex_key(r) for r in radii)) != len(radii):
+        raise ValueError("--spheres lists the same radius twice; apexes are "
+                         "stored per radius, so they would share one apex.")
+    return radii
+
+
+def sphere_jitter(radius, args):
+    """How far from one sphere's apex its points may sit."""
+    if args.jitter is not None:
+        return args.jitter
+    if radius <= 0.0:
+        raise ValueError(
+            "A radius of 0 is a flat surface, so there is no R to take a "
+            "fraction of - give --jitter to say how wide to sample it.")
+    return radius * args.jitter_fraction
+
+
+def resolve_sphere_apexes(radii, rtde_help, args, orientation, travel_height):
+    """One apex per sphere, jogged now or loaded from the store.
+
+    Every jog happens before any tapping, so one person at the keyboard sets
+    all the spheres up and the rest of the run is unattended.
+
+    Between spheres the tool lifts straight up, crosses high, and only then
+    comes down. goToPose is a straight line in space: driving from the apex it
+    is sitting on to the next sphere's hover pose would cut the corner through
+    whatever stands between them.
+    """
+    apexes = []
+    for radius in radii:
+        try:
+            stored = np.asarray(parse_offsets(read_apex(radius))[0], dtype=float)
+        except (RuntimeError, ValueError):
+            stored = None
+
+        if not args.jog_apex:
+            if stored is None:
+                raise RuntimeError(
+                    "No apex saved for the %s m sphere in %s. Run once with "
+                    "--jog-apex to set them." % (apex_key(radius), APEX_STORE))
+            print("Sphere %s m: using the saved apex %s"
+                  % (apex_key(radius), np.round(stored, 5)))
+            apexes.append(stored)
+            continue
+
+        start = stored
+        if start is None:
+            pose = rtde_help.rtde_r.getActualTCPPose()
+            start = np.array([pose[0], pose[1], pose[2]])
+            print("Sphere %s m: nothing saved yet, so the jog starts from where "
+                  "the arm is now." % apex_key(radius))
+        here = rtde_help.rtde_r.getActualTCPPose()
+        safe_z = max(here[2], start[2], *[a[2] for a in apexes] or [start[2]]) + travel_height
+        rtde_help.goToPose(rtde_help.getPoseObj([here[0], here[1], safe_z], orientation))
+        rtde_help.goToPose(rtde_help.getPoseObj([start[0], start[1], safe_z], orientation))
+
+        print()
+        print("=== Jog to the apex of the %s m sphere (%d of %d) ==="
+              % (apex_key(radius), len(apexes) + 1, len(radii)))
+        apex = jog_to_apex(rtde_help, start, orientation, args)
+        write_apex(radius, np.asarray(apex, dtype=float))
+        apexes.append(np.asarray(apex, dtype=float))
+    return apexes
+
+
+def multi_sphere_plan(radii, apexes, yaws, args):
+    """Waypoints for every sphere, interleaved point by point.
+
+    Each sphere gets its own scattered points, and the run visits the first
+    point of every sphere before coming back for the second. Spreading each
+    sphere's taps across the whole run is the reason for doing them together:
+    anything that drifts - the lip taking a set, the vacuum, the room - then
+    lands on all four curvatures equally instead of on whichever sphere was
+    mounted at the time, where it would look like a property of that sphere.
+    """
+    rng = np.random.default_rng(args.seed)
+    per_sphere = []
+    for index, (radius, apex) in enumerate(zip(radii, apexes)):
+        jitter = sphere_jitter(radius, args)
+        if radius > 0.0 and jitter >= radius:
+            raise ValueError(
+                "Points on the %s m sphere would reach %.4f m from its apex, "
+                "at or beyond its radius - there is no surface there."
+                % (apex_key(radius), jitter))
+        _, offsets, plan_yaws = sampling_plan(
+            args.repeat, jitter, yaws, args.seed + index, args.yaw_jitter,
+            args.yaw_span, shuffle=False)
+        per_sphere.append((radius, np.asarray(apex, dtype=float), offsets,
+                           plan_yaws, jitter))
+
+    labels, waypoints, yaw_plan, tap_radius, plan_rows = [], [], [], [], []
+    for point in range(args.repeat):
+        for radius, apex, offsets, plan_yaws, _ in per_sphere:
+            first = point * len(yaws)
+            for step in rng.permutation(len(yaws)):
+                index = first + int(step)
+                dx, dy, _ = offsets[index]
+                yaw = plan_yaws[index]
+                touch = apex + np.array([dx, dy, -surface_drop(radius, dx, dy)])
+                if np.linalg.norm(touch - apex) > args.max_offset + 1e-9:
+                    raise ValueError(
+                        "A point on the %s m sphere is %.3f m from its apex, "
+                        "beyond --max-offset %.3f m."
+                        % (apex_key(radius), np.linalg.norm(touch - apex),
+                           args.max_offset))
+                labels.append("R%s p%d" % (apex_key(radius), point + 1))
+                waypoints.append(touch)
+                yaw_plan.append(yaw)
+                tap_radius.append(radius)
+                plan_rows.append([dx, dy, yaw])
+    return labels, waypoints, yaw_plan, tap_radius, np.array(plan_rows), per_sphere
 
 
 def surface_drop(radius, dx, dy):
@@ -932,7 +1063,7 @@ def validate_args(args):
     non_negative = {
         "--radius": args.radius,
         "--repeat": args.repeat,
-        "--jitter": args.jitter,
+        "--jitter": 0.0 if args.jitter is None else args.jitter,
         "--yaw-span": args.yaw_span,
         "--yaw-jitter": 0.0 if args.yaw_jitter is None else args.yaw_jitter,
         "--standoff": args.standoff,
@@ -983,12 +1114,18 @@ def validate_args(args):
             "tap has taps.")
     if args.yaws < 1:
         raise ValueError("--yaws must be at least 1, got %s" % args.yaws)
-    if args.repeat > 0 and args.radius > 0.0 and args.jitter >= args.radius:
+    if (args.repeat > 0 and not args.spheres and args.radius > 0.0
+            and sphere_jitter(args.radius, args) >= args.radius):
         raise ValueError(
             "--jitter (%.4f m) must stay inside the sphere radius (%.4f m): "
             "there is no surface at or beyond it."
-            % (args.jitter, args.radius))
-    if args.repeat > 0:
+            % (sphere_jitter(args.radius, args), args.radius))
+    if args.spheres:
+        if args.repeat <= 0:
+            raise ValueError("--spheres needs --repeat to say how many points "
+                             "to sample on each sphere.")
+        count = args.repeat * args.yaws * len(parse_radii(args.spheres))
+    elif args.repeat > 0:
         count = args.repeat * args.yaws
     else:
         count = 5 if args.radius > 0.0 else len(parse_offsets(args.offsets))
@@ -1020,7 +1157,22 @@ def wait_for_data_logger(node, client, timeout_sec=30.0):
 def main(args):
     np.set_printoptions(precision=4)
     yaw_plan = None
-    if args.repeat > 0:
+    spheres = parse_radii(args.spheres) if args.spheres else None
+    if spheres is not None:
+        # The plan needs every apex, which the jog only produces once the robot
+        # is up, so it is built later; nothing here depends on it.
+        if args.seed is None:
+            args.seed = int.from_bytes(os.urandom(4), "big")
+        if args.yaw_jitter is None:
+            args.yaw_jitter = args.yaw_span / (2.0 * args.yaws)
+        yaws = np.linspace(0.0, args.yaw_span, args.yaws, endpoint=False)
+        labels, offsets = [], []
+        print("Spheres %s m, %d points each at yaw %s deg +/- %.0f - %d taps "
+              "in all, interleaved sphere by sphere, seed %d."
+              % ("/".join(apex_key(r) for r in spheres), args.repeat,
+                 "/".join("%.0f" % y for y in yaws), args.yaw_jitter,
+                 args.repeat * args.yaws * len(spheres), args.seed))
+    elif args.repeat > 0:
         # Recorded so the run can be reproduced, and so the .mat says which
         # plan produced it.
         if args.seed is None:
@@ -1040,6 +1192,7 @@ def main(args):
                  len(offsets), args.seed))
         args.tap_plan = np.array([[dx, dy, yaw] for (dx, dy, _), yaw
                                   in zip(offsets, yaw_plan)])
+        args.tap_radius = np.full(len(offsets), args.radius)
     elif args.radius > 0.0:
         labels, offsets = compass_offsets(args.radius)
         print(
@@ -1122,7 +1275,29 @@ def main(args):
             time.sleep(1)
             file_help.clearTmpFolder()
 
-        if args.apex is not None:
+        if spheres is not None:
+            if args.dry_run:
+                apexes = []
+                for radius in spheres:
+                    apexes.append(np.asarray(
+                        parse_offsets(read_apex(radius))[0], dtype=float))
+                    print("Sphere %s m: saved apex %s"
+                          % (apex_key(radius), np.round(apexes[-1], 5)))
+            else:
+                apexes = resolve_sphere_apexes(spheres, rtde_help, args,
+                                               orientation_fixed,
+                                               args.travel_height)
+            (labels, sphere_waypoints, yaw_plan, tap_radius, args.tap_plan,
+             per_sphere) = multi_sphere_plan(spheres, apexes, yaws, args)
+            args.tap_radius = np.array(tap_radius)
+            args.apex_used = np.array(apexes)
+            args.apex_source = "manual"
+            apex = apexes[0]
+            apex_frame = "manual"
+            for radius, _, _, _, jitter in per_sphere:
+                print("  %s m sphere: points within %.1f mm of its apex"
+                      % (apex_key(radius), jitter * 1e3))
+        elif args.apex is not None:
             # Vision bypassed entirely. Some targets return no depth at all -
             # a smooth, glossy, dark sphere gives the stereo matcher nothing to
             # match, and the IR projector reflects off it rather than scattering
@@ -1145,50 +1320,55 @@ def main(args):
             print("Sphere apex (%s): x=%.5f y=%.5f z=%.5f"
                   % ((apex_frame,) + tuple(apex)))
 
-        apex_vision = np.asarray(apex, dtype=float)
-        args.apex_source = apex_frame
+        # Only the single-apex paths have a vision estimate to correct, an
+        # offset to apply or one apex to record; --spheres resolved all of
+        # theirs above, and running this would jog them a second time.
+        if spheres is None:
+            apex_vision = np.asarray(apex, dtype=float)
+            args.apex_source = apex_frame
 
-        offset_text = args.apex_offset.strip()
-        if args.apex is not None and offset_text not in ("", "0,0,0"):
-            # The saved offset corrects the camera, and there is no camera in
-            # this path. Applying it to a hand-entered apex would move the arm
-            # away from the number that was typed.
-            print("Ignoring --apex-offset: it corrects the vision estimate, and "
-                  "--apex replaces it.")
-            offset_text = "0,0,0"
-        if offset_text == "last":
-            offset_text = read_apex_offset()
-            print("Loaded saved apex offset %s from %s"
-                  % (offset_text, APEX_OFFSET_FILE))
-        apex_offset = np.asarray(parse_offsets(offset_text)[0], dtype=float)
-        if np.any(apex_offset):
-            apex = apex_vision + apex_offset
-            print("Applied apex offset %s -> x=%.5f y=%.5f z=%.5f"
-                  % (np.round(apex_offset, 5), apex[0], apex[1], apex[2]))
+            offset_text = args.apex_offset.strip()
+            if args.apex is not None and offset_text not in ("", "0,0,0"):
+                # The saved offset corrects the camera, and there is no camera in
+                # this path. Applying it to a hand-entered apex would move the arm
+                # away from the number that was typed.
+                print("Ignoring --apex-offset: it corrects the vision estimate, and "
+                      "--apex replaces it.")
+                offset_text = "0,0,0"
+            if offset_text == "last":
+                offset_text = read_apex_offset()
+                print("Loaded saved apex offset %s from %s"
+                      % (offset_text, APEX_OFFSET_FILE))
+            apex_offset = np.asarray(parse_offsets(offset_text)[0], dtype=float)
+            if np.any(apex_offset):
+                apex = apex_vision + apex_offset
+                print("Applied apex offset %s -> x=%.5f y=%.5f z=%.5f"
+                      % (np.round(apex_offset, 5), apex[0], apex[1], apex[2]))
 
-        if args.jog_apex:
-            if args.dry_run:
-                print("--jog-apex needs the robot, and --dry-run does not start "
-                      "it. Skipping the jog.")
-            else:
-                apex = jog_to_apex(rtde_help, apex, orientation_fixed, args)
-                # Save the total correction from the vision estimate, not just
-                # the part added by hand, so --apex-offset last reproduces this
-                # run's apex from a fresh vision reading.
-                write_apex_offset(np.asarray(apex, dtype=float) - apex_vision)
-                write_apex(args.radius, np.asarray(apex, dtype=float))
+            if args.jog_apex:
+                if args.dry_run:
+                    print("--jog-apex needs the robot, and --dry-run does not start "
+                          "it. Skipping the jog.")
+                else:
+                    apex = jog_to_apex(rtde_help, apex, orientation_fixed, args)
+                    # Save the total correction from the vision estimate, not just
+                    # the part added by hand, so --apex-offset last reproduces this
+                    # run's apex from a fresh vision reading.
+                    write_apex_offset(np.asarray(apex, dtype=float) - apex_vision)
+                    write_apex(args.radius, np.asarray(apex, dtype=float))
 
-        # Recorded onto args so they land in the .mat alongside everything else:
-        # a sweep is not interpretable later without knowing which apex it
-        # actually probed, and a jogged apex exists nowhere else.
-        args.apex_vision = [float(v) for v in apex_vision]
-        args.apex_used = [float(v) for v in np.asarray(apex, dtype=float)]
-        args.apex_correction = [float(v) for v in
-                                (np.asarray(apex, dtype=float) - apex_vision)]
+            # Recorded onto args so they land in the .mat alongside everything else:
+            # a sweep is not interpretable later without knowing which apex it
+            # actually probed, and a jogged apex exists nowhere else.
+            args.apex_vision = [float(v) for v in apex_vision]
+            args.apex_used = [float(v) for v in np.asarray(apex, dtype=float)]
+            args.apex_correction = [float(v) for v in
+                                    (np.asarray(apex, dtype=float) - apex_vision)]
 
 
-        waypoints = []
-        for label, (dx, dy, dz) in zip(labels, offsets):
+        waypoints = list(sphere_waypoints) if spheres is not None else []
+        for label, (dx, dy, dz) in zip(labels if spheres is None else [],
+                                       offsets if spheres is None else []):
             # In descend mode this is the predicted surface height, used only to
             # place the hover pose; the real touch z comes from the FT sensor.
             if offset_mode:
@@ -1212,9 +1392,15 @@ def main(args):
         else:
             print("Predicted surface points (%s); actual touch z is found by the "
                   "FT sensor:" % apex_frame)
-        for label, offset, touch_xyz in zip(labels, offsets, waypoints):
-            print("  %-6s offset %s -> %s"
-                  % (label, np.array(offset), np.round(touch_xyz, 5)))
+        if spheres is None:
+            for label, offset, touch_xyz in zip(labels, offsets, waypoints):
+                print("  %-6s offset %s -> %s"
+                      % (label, np.array(offset), np.round(touch_xyz, 5)))
+        else:
+            for label, row, touch_xyz in zip(labels, args.tap_plan, waypoints):
+                print("  %-12s offset %s yaw %3.0f -> %s"
+                      % (label, np.round(row[:2], 4), row[2],
+                         np.round(touch_xyz, 5)))
         if args.dry_run:
             print("Dry run: no robot motion commanded.")
             return
@@ -1235,9 +1421,20 @@ def main(args):
         # One plane above the sphere that every lateral move happens in, so the
         # tool never traverses near the surface. Fixed relative to the apex
         # rather than to each waypoint, so it clears the sphere's top too.
-        travel_z = apex[2] + args.travel_height
-        print("Travel plane at z=%.5f (%.1f mm above the apex)."
-              % (travel_z, args.travel_height * 1e3))
+        if spheres is not None:
+            # One plane over the tallest sphere: every lateral move crosses all
+            # of them, so clearing only the one being tapped is not enough.
+            travel_z = max(a[2] for a in apexes) + args.travel_height
+            print("Travel plane at z=%.5f (%.1f mm above the highest apex of "
+                  "the %d spheres)." % (travel_z, args.travel_height * 1e3,
+                                        len(apexes)))
+            here = rtde_help.rtde_r.getActualTCPPose()
+            rtde_help.goToPose(rtde_help.getPoseObj(
+                [here[0], here[1], travel_z], orientation_fixed))
+        else:
+            travel_z = apex[2] + args.travel_height
+            print("Travel plane at z=%.5f (%.1f mm above the apex)."
+                  % (travel_z, args.travel_height * 1e3))
 
         def gate(prompt):
             """Wait for <Enter>, or just announce the step when unattended."""
@@ -1343,7 +1540,10 @@ def main(args):
             print("Returning to the parked pose %s." % np.round(HOME_POSITION, 4))
             rtde_help.goToPose(rtde_help.getPoseObj(HOME_POSITION, HOME_QUAT))
 
-        if args.repeat > 0:
+        if spheres is not None:
+            plan_txt = "spheres_%s_repeat_%dx%d" % (
+                "_".join(apex_key(r) for r in spheres), args.repeat, args.yaws)
+        elif args.repeat > 0:
             plan_txt = "radius_%s_repeat_%dx%d" % (args.radius, args.repeat,
                                                    args.yaws)
         elif args.radius > 0.0:
@@ -1525,14 +1725,32 @@ if __name__ == "__main__":
                         "in meters, or the word 'last' to reuse the offset saved "
                         "by the most recent --jog-apex. A jog only has to be done "
                         "once per camera setup")
+    parser.add_argument("--spheres", type=str, default=None,
+                        help="run several spheres bolted down at once, as a "
+                        "list of radii in metres, e.g. '0.010,0.020,0.030,0.040'. "
+                        "Each is jogged at the start and remembered under its "
+                        "own radius; the run then taps them interleaved, a "
+                        "point at a time, until every sphere is done. Needs "
+                        "--repeat; --radius and --offsets are ignored")
+    parser.add_argument("--jitter-fraction", type=float, default=1.0 / 3.0,
+                        help="how far from each sphere's apex its points may "
+                        "sit, as a fraction of that sphere's radius, when "
+                        "--jitter is not given. 1/3 is a 19.5 degree slope at "
+                        "the furthest point")
+    parser.add_argument("--jog-range", type=float, default=None,
+                        help="how far a jog may travel sideways from where it "
+                        "started (m). Defaults to --max-offset; raise it to "
+                        "cross between spheres")
     parser.add_argument("--repeat", type=int, default=0,
                         help="sample this many contact points at random within "
                         "--jitter of the apex instead of using --radius or "
                         "--offsets, each tapped at every yaw angle")
-    parser.add_argument("--jitter", type=float, default=0.002,
+    parser.add_argument("--jitter", type=float, default=None,
                         help="--repeat: furthest a contact point may sit from "
-                        "the apex (m). On a sphere of radius R, R/3 puts the "
-                        "steepest tap on a 19.5 degree slope")
+                        "the apex (m). Defaults to --jitter-fraction of the "
+                        "radius, so each sphere is sampled over the same range "
+                        "of slopes; required for a flat surface, which has no "
+                        "radius to take a fraction of")
     parser.add_argument("--yaws", type=int, default=6,
                         help="--repeat: how many yaw angles to tap each point "
                         "at, evenly spaced over --yaw-span. 6 gives a 20 degree "

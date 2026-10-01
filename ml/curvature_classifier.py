@@ -98,6 +98,10 @@ def load_run(path, channels):
         return None, "mode is %r, not tap" % mode
     radius = float(mat.get("radius", 0.0))
     repeat = int(mat.get("repeat", 0) or 0)
+    # One run can cover several spheres bolted down together, so the radius can
+    # differ from tap to tap; the per-run radius is the fallback.
+    tap_radius = mat.get("tap_radius")
+    tap_radius = np.atleast_1d(tap_radius) if tap_radius is not None and np.size(tap_radius) else None
     # dx, dy, yaw per tap, in waypoint order, for runs that sampled a plan.
     plan = mat.get("tap_plan")
     plan = np.atleast_2d(plan) if plan is not None and np.size(plan) else None
@@ -118,6 +122,7 @@ def load_run(path, channels):
             "radius": radius,
             "repeat": repeat,
             "plan": plan,
+            "tap_radius": tap_radius,
             "sync_t": sync[1][:, 0],
             "sync_code": np.rint(column(sync, lambda n: n != "ROStimestamp",
                                         "/sync")).astype(int),
@@ -138,6 +143,15 @@ def load_run(path, channels):
         except KeyError:
             pass
     return run, None
+
+
+def curvature_of(run, waypoint):
+    """The curvature of whatever this particular tap touched."""
+    radius = run["radius"]
+    per_tap = run.get("tap_radius")
+    if per_tap is not None and waypoint - 1 < len(per_tap):
+        radius = float(per_tap[waypoint - 1])
+    return round(1.0 / radius if radius > 0 else 0.0, 6)
 
 
 def first_time(run, code):
@@ -248,14 +262,15 @@ def build_dataset(args):
             continue
         samples, skipped = extract_taps(run, args)
         runs.append((run, samples))
-        report.append((path, run["radius"], len(samples), skipped, None))
+        surfaces = sorted({curvature_of(run, waypoint) for waypoint, _ in samples})
+        report.append((path, surfaces, len(samples), skipped, None))
 
     # A channel has to exist in every run, or the arrays do not line up.
     has_z = bool(runs) and all("z" in run for run, _ in runs)
     X, y, groups, meta = [], [], [], []
     for group, (run, samples) in enumerate(runs):
-        kappa = 1.0 / run["radius"] if run["radius"] > 0 else 0.0
         for waypoint, array in samples:
+            kappa = curvature_of(run, waypoint)
             if not has_z and "z" in run:
                 array = array[:-1]
             X.append(array)
@@ -272,15 +287,15 @@ def build_dataset(args):
 
 
 def print_report(report):
-    print("%-58s %8s %5s  %s" % ("run", "label", "taps", "notes"))
-    for path, radius, kept, skipped, problem in report:
+    print("%-52s %-22s %5s  %s" % ("run", "surfaces", "taps", "notes"))
+    for path, surfaces, kept, skipped, problem in report:
         name = os.path.basename(path)
         if problem is not None:
-            print("%-58s %8s %5s  skipped: %s" % (name[:58], "-", "-", problem))
+            print("%-52s %-22s %5s  skipped: %s" % (name[:52], "-", "-", problem))
             continue
-        kappa = 1.0 / radius if radius > 0 else 0.0
+        labels = ", ".join(class_name(k) for k in surfaces) or "-"
         notes = "; ".join("wp%d %s" % item for item in skipped)
-        print("%-58s %8s %5d  %s" % (name[:58], class_name(kappa), kept, notes))
+        print("%-52s %-22s %5d  %s" % (name[:52], labels[:22], kept, notes))
 
 
 def models(n_channels):
@@ -302,6 +317,10 @@ def models(n_channels):
 
 
 def evaluate(name, model, features, labels, groups, classes):
+    """Leave-one-run-out scores. `labels` and `classes` are class names, not
+    curvatures: a curvature like 1/0.030 is not a whole number, and a float
+    label makes scikit-learn read the target as a continuous quantity to be
+    regressed rather than a class to be recognised."""
     from sklearn.base import clone
     from sklearn.metrics import balanced_accuracy_score, confusion_matrix
     from sklearn.model_selection import LeaveOneGroupOut
@@ -323,15 +342,15 @@ def evaluate(name, model, features, labels, groups, classes):
     print("%s: accuracy %.1f%%, balanced accuracy %.1f%%, leaving one run out "
           "at a time" % (name, accuracy * 1e2, balanced * 1e2))
     matrix = confusion_matrix(labels, predicted, labels=classes)
-    width = max(len(class_name(k)) for k in classes) + 2
+    width = max(len(name) for name in classes) + 2
     print(" " * width + "predicted ->")
-    print(" " * width + "".join("%*s" % (width, class_name(k)) for k in classes))
-    for kappa, row in zip(classes, matrix):
-        print("%*s" % (width, class_name(kappa)) + "".join("%*d" % (width, n) for n in row))
+    print(" " * width + "".join("%*s" % (width, name) for name in classes))
+    for name, row in zip(classes, matrix):
+        print("%*s" % (width, name) + "".join("%*d" % (width, n) for n in row))
 
 
 def main(args):
-    X, y, groups, meta, report, names = build_dataset(args)
+    X, y, groups, meta, report, channels = build_dataset(args)
     print_report(report)
     if args.list:
         return
@@ -343,7 +362,7 @@ def main(args):
     print("%d taps from %d runs, %d classes; each tap is %d channels x %d "
           "points (%s): %s"
           % (len(y), len(np.unique(groups)), len(classes), X.shape[1], X.shape[2],
-             args.representation, ", ".join(names)))
+             args.representation, ", ".join(channels)))
     print("%-10s %8s %6s %6s" % ("class", "1/R", "runs", "taps"))
     thin = []
     for kappa in classes:
@@ -362,9 +381,11 @@ def main(args):
               "class." % ", ".join(thin))
 
     features = X.reshape(len(X), -1)
+    targets = np.array([class_name(kappa) for kappa in y])
+    names = [class_name(kappa) for kappa in classes]
     candidates = models(X.shape[1])
     for name, model in candidates.items():
-        evaluate(name, model, features, y, groups, classes)
+        evaluate(name, model, features, targets, groups, names)
 
     # Fitted on every tap for use on new data. Its accuracy is the
     # leave-one-run-out figure above, not anything measured on this fit.
@@ -375,14 +396,15 @@ def main(args):
     out = os.path.join(os.path.expanduser(args.out), "curvature_%s_%dpt"
                        % (args.representation, args.points))
     np.savez(out + "_dataset.npz", X=X, y=y, groups=groups,
-             channels=np.array(names), files=np.array([m[0] for m in meta]),
+             channels=np.array(channels), files=np.array([m[0] for m in meta]),
              waypoints=np.array([m[1] for m in meta]),
              offsets=np.array([m[2:4] for m in meta]),
              yaws=np.array([m[4] for m in meta]))
     import joblib
-    final = candidates[args.model].fit(features, y)
-    joblib.dump({"model": final, "classes": classes, "channels": names,
-                 "config": vars(args)}, out + "_%s.joblib" % args.model)
+    final = candidates[args.model].fit(features, targets)
+    joblib.dump({"model": final, "classes": names, "curvatures": classes,
+                 "channels": channels, "config": vars(args)},
+                out + "_%s.joblib" % args.model)
     print()
     print("Dataset: %s_dataset.npz" % out)
     print("Model (%s, fitted on all %d taps): %s_%s.joblib"
