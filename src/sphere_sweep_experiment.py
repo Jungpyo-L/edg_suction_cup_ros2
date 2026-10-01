@@ -20,7 +20,7 @@ import rclpy
 from geometry_msgs.msg import PointStamped, WrenchStamped
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-from std_msgs.msg import Int8
+from std_msgs.msg import Int16
 
 from suction_cup.srv import Enable
 from helperFunction.FT_callback_helper import FT_CallbackHelp
@@ -300,8 +300,9 @@ def retreat_to_home(rtde_help, travel_z, orientation, go_home=True):
 # recovers both with divmod(code, 10): code 21 is waypoint 2, event 1.
 #
 # Event 0 means the tool is travelling and the sample should be ignored. The
-# others bound the phases of one probe. Int8 caps the value at 127, hence the
-# waypoint limit in validate_args.
+# others bound the phases of one probe. Int16 caps the value at 32767, hence
+# the waypoint limit in validate_args - Int8 held only 12 waypoints, which a
+# --repeat run passes immediately.
 EVENT_TRAVEL = 0
 EVENT_DESCEND = 1
 EVENT_CONTACT = 2
@@ -309,15 +310,15 @@ EVENT_PRELOAD = 3
 EVENT_DWELL_END = 4
 # Emitted once per completed step, so every step boundary is its own row in the
 # sync log. The code repeats rather than counting: the step index is the row's
-# position within the waypoint, which keeps the value inside Int8 no matter how
-# many steps a descent takes.
+# position within the waypoint, which keeps the value inside the code no matter
+# how many steps a descent takes.
 EVENT_DESCEND_STEP = 5
 EVENT_PRELOAD_STEP = 6
 # Tap mode only: the cup is back at the hover pose. Not EVENT_DWELL_END - a tap
 # has no dwell, and reusing that code would make plot_sweep shade the retract
 # as one. In tap mode EVENT_PRELOAD marks the instant the descent was stopped.
 EVENT_RETRACT_END = 7
-MAX_WAYPOINTS = 12
+MAX_WAYPOINTS = (32767 - 9) // 10
 
 # Cap on retained apex samples. The listener keeps receiving for the whole run,
 # since read_avg_fz spins the node on every descent step, so an unbounded list
@@ -400,6 +401,35 @@ class ApexListener:
         spread = samples.max(axis=0) - samples.min(axis=0)
         self.node.get_logger().info("Apex sample spread (m): %s" % np.round(spread, 4))
         return samples.mean(axis=0)
+
+
+def sampling_plan(count, jitter, yaws, seed):
+    """`count` contact points within `jitter` of the apex, each tapped at every
+    yaw angle, in a shuffled order.
+
+    Returns (labels, offsets, yaw per tap).
+
+    The radius is drawn uniformly rather than uniformly by area. What is being
+    covered is the surface tilt under the cup, which grows with distance from
+    the apex; sampling by area would crowd the outer ring and leave the
+    near-apex tilts thin.
+
+    The order is shuffled so that anything drifting through the session - the
+    lip taking a set, the sphere shifting on its mount - cannot line up with
+    yaw or with distance from the apex, which would otherwise look exactly
+    like a real effect of those.
+    """
+    rng = np.random.default_rng(seed)
+    plan = []
+    for _ in range(count):
+        radius = jitter * rng.random()
+        angle = 2.0 * np.pi * rng.random()
+        for yaw in yaws:
+            plan.append((radius * np.cos(angle), radius * np.sin(angle), yaw))
+    plan = [plan[i] for i in rng.permutation(len(plan))]
+    labels = ["tap %d" % (i + 1) for i in range(len(plan))]
+    offsets = [(dx, dy, 0.0) for dx, dy, _ in plan]
+    return labels, offsets, [yaw for _, _, yaw in plan]
 
 
 def surface_drop(radius, dx, dy):
@@ -883,6 +913,9 @@ def validate_args(args):
 
     non_negative = {
         "--radius": args.radius,
+        "--repeat": args.repeat,
+        "--jitter": args.jitter,
+        "--yaw-span": args.yaw_span,
         "--standoff": args.standoff,
         "--preload-depth": args.preload_depth,
         "--hover-height": args.hover_height,
@@ -929,11 +962,21 @@ def validate_args(args):
         raise ValueError(
             "--log-tap-only cuts the log to the tap windows, and only --mode "
             "tap has taps.")
-    count = 5 if args.radius > 0.0 else len(parse_offsets(args.offsets))
+    if args.yaws < 1:
+        raise ValueError("--yaws must be at least 1, got %s" % args.yaws)
+    if args.repeat > 0 and args.radius > 0.0 and args.jitter >= args.radius:
+        raise ValueError(
+            "--jitter (%.4f m) must stay inside the sphere radius (%.4f m): "
+            "there is no surface at or beyond it."
+            % (args.jitter, args.radius))
+    if args.repeat > 0:
+        count = args.repeat * args.yaws
+    else:
+        count = 5 if args.radius > 0.0 else len(parse_offsets(args.offsets))
     if count > MAX_WAYPOINTS:
         raise ValueError(
-            "%d waypoints exceeds the %d that fit in the Int8 /sync phase code "
-            "(waypoint * 10 + event)." % (count, MAX_WAYPOINTS)
+            "%d waypoints exceeds the %d that fit in the Int16 /sync phase "
+            "code (waypoint * 10 + event)." % (count, MAX_WAYPOINTS)
         )
     if args.apex_samples > APEX_BUFFER:
         raise ValueError(
@@ -957,7 +1000,22 @@ def wait_for_data_logger(node, client, timeout_sec=30.0):
 
 def main(args):
     np.set_printoptions(precision=4)
-    if args.radius > 0.0:
+    yaw_plan = None
+    if args.repeat > 0:
+        # Recorded so the run can be reproduced, and so the .mat says which
+        # plan produced it.
+        if args.seed is None:
+            args.seed = int.from_bytes(os.urandom(4), "big")
+        yaws = np.linspace(0.0, args.yaw_span, args.yaws, endpoint=False)
+        labels, offsets, yaw_plan = sampling_plan(args.repeat, args.jitter,
+                                                  yaws, args.seed)
+        print("Repeat mode: %d points within %.1f mm of the apex, each tapped "
+              "at yaw %s deg - %d taps, shuffled, seed %d."
+              % (args.repeat, args.jitter * 1e3,
+                 "/".join("%.0f" % y for y in yaws), len(offsets), args.seed))
+        args.tap_plan = np.array([[dx, dy, yaw] for (dx, dy, _), yaw
+                                  in zip(offsets, yaw_plan)])
+    elif args.radius > 0.0:
         labels, offsets = compass_offsets(args.radius)
         print(
             "Sphere radius %.4f m -> five waypoints: the apex, then %.4f m N, W, S, E "
@@ -966,6 +1024,8 @@ def main(args):
     else:
         offsets = parse_offsets(args.offsets)
         labels = ["waypoint %d" % i for i in range(1, len(offsets) + 1)]
+    if yaw_plan is None:
+        yaw_plan = [0.0] * len(offsets)
 
     validate_args(args)
     offset_mode = args.mode == "offset"
@@ -998,7 +1058,15 @@ def main(args):
     # Held outside the try so an interrupt anywhere below still knows where the
     # safe plane is and which way the tool is pointing.
     travel_z = None
-    orientation_fixed = R.from_rotvec(ROTVEC_DEFAULT).as_quat()
+    base_rotation = R.from_rotvec(ROTVEC_DEFAULT)
+    orientation_fixed = base_rotation.as_quat()
+
+    def yaw_orientation(degrees):
+        """The tool turned about its own axis, which points down, so this spins
+        the cup in place without changing where it points."""
+        if degrees == 0.0:
+            return orientation_fixed
+        return (base_rotation * R.from_euler("z", degrees, degrees=True)).as_quat()
     try:
         apex_listener = ApexListener(node, args.apex_topic)
 
@@ -1022,7 +1090,7 @@ def main(args):
             rtde_help = rtdeHelp(125, node=node)
             time.sleep(0.5)
 
-            sync_pub = node.create_publisher(Int8, "sync", 1)
+            sync_pub = node.create_publisher(Int16, "sync", 1)
             data_logger_client = node.create_client(Enable, "data_logging")
             wait_for_data_logger(node, data_logger_client)
             call_enable_service(node, data_logger_client, False)
@@ -1154,14 +1222,17 @@ def main(args):
             input(prompt)
 
         def publish_event(index, event):
-            sync_pub.publish(Int8(data=index * 10 + event))
+            sync_pub.publish(Int16(data=index * 10 + event))
             rclpy.spin_once(node, timeout_sec=0.0)
 
         for index, (label, touch_xyz) in enumerate(zip(labels, waypoints), start=1):
             hover_xyz = touch_xyz + np.array([0.0, 0.0, args.hover_height])
-            hover = rtde_help.getPoseObj(list(hover_xyz), orientation_fixed)
+            # The cup turns as it crosses in the travel plane, so it is already
+            # at this tap's yaw before it comes anywhere near the surface.
+            orientation = yaw_orientation(yaw_plan[index - 1])
+            hover = rtde_help.getPoseObj(list(hover_xyz), orientation)
             travel = rtde_help.getPoseObj(
-                [touch_xyz[0], touch_xyz[1], travel_z], orientation_fixed
+                [touch_xyz[0], touch_xyz[1], travel_z], orientation
             )
 
             print("--- %s ---" % label)
@@ -1177,18 +1248,18 @@ def main(args):
                 gate("Press <Enter> to cycle to next touch pose")
                 publish_event(index, EVENT_DESCEND)
                 rtde_help.goToPose(
-                    rtde_help.getPoseObj(list(touch_xyz), orientation_fixed)
+                    rtde_help.getPoseObj(list(touch_xyz), orientation)
                 )
             elif tap_mode:
                 gate("Press <Enter> to tap")
                 z_contact, z_stop, peak, reason = tap_surface(
                     rtde_help, tap_watch, (touch_xyz[0], touch_xyz[1]),
-                    hover_xyz[2], orientation_fixed, args,
+                    hover_xyz[2], orientation, args,
                     # Publish only. publish_event also spins the main node,
                     # which would hold up the tap loop mid-descent for as long
                     # as that node has callbacks queued.
                     on_event=lambda event, i=index: sync_pub.publish(
-                        Int8(data=i * 10 + event)),
+                        Int16(data=i * 10 + event)),
                 )
                 if z_contact is None:
                     print("  %-6s tap: no contact, stopped at z=%.5f on %s, "
@@ -1217,7 +1288,7 @@ def main(args):
                 publish_event(index, EVENT_DESCEND)
                 z_contact, z_final, fz_final = descend_to_contact(
                     node, rtde_help, ft_help, (touch_xyz[0], touch_xyz[1]),
-                    hover_xyz[2], orientation_fixed, args,
+                    hover_xyz[2], orientation, args,
                     on_event=lambda event, i=index: publish_event(i, event),
                 )
                 print("  %-6s contact z=%.5f, final z=%.5f (%.1f mm preload), "
@@ -1247,7 +1318,10 @@ def main(args):
             print("Returning to the parked pose %s." % np.round(HOME_POSITION, 4))
             rtde_help.goToPose(rtde_help.getPoseObj(HOME_POSITION, HOME_QUAT))
 
-        if args.radius > 0.0:
+        if args.repeat > 0:
+            plan_txt = "radius_%s_repeat_%dx%d" % (args.radius, args.repeat,
+                                                   args.yaws)
+        elif args.radius > 0.0:
             plan_txt = "radius_%s" % args.radius
         else:
             plan_txt = "offsets_%s" % args.offsets.replace(";", "__").replace(",", "_")
@@ -1426,6 +1500,25 @@ if __name__ == "__main__":
                         "in meters, or the word 'last' to reuse the offset saved "
                         "by the most recent --jog-apex. A jog only has to be done "
                         "once per camera setup")
+    parser.add_argument("--repeat", type=int, default=0,
+                        help="sample this many contact points at random within "
+                        "--jitter of the apex instead of using --radius or "
+                        "--offsets, each tapped at every yaw angle")
+    parser.add_argument("--jitter", type=float, default=0.002,
+                        help="--repeat: furthest a contact point may sit from "
+                        "the apex (m). On a sphere of radius R, R/3 puts the "
+                        "steepest tap on a 19.5 degree slope")
+    parser.add_argument("--yaws", type=int, default=1,
+                        help="--repeat: how many yaw angles to tap each point "
+                        "at, evenly spaced over --yaw-span")
+    parser.add_argument("--yaw-span", type=float, default=120.0,
+                        help="--repeat: range of cup rotation covered (deg). "
+                        "120 is one chamber spacing, so with three identical "
+                        "chambers it covers every distinct orientation, and it "
+                        "is as far as the tubing allows")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="--repeat: seed for the sampling plan. Recorded in "
+                        "the .mat either way, so a run can be repeated exactly")
     parser.add_argument("--apex-samples", type=int, default=20,
                         help="apex messages averaged before planning")
     parser.add_argument("--apex-timeout", type=float, default=20.0)

@@ -97,6 +97,10 @@ def load_run(path, channels):
     if mode != "tap":
         return None, "mode is %r, not tap" % mode
     radius = float(mat.get("radius", 0.0))
+    repeat = int(mat.get("repeat", 0) or 0)
+    # dx, dy, yaw per tap, in waypoint order, for runs that sampled a plan.
+    plan = mat.get("tap_plan")
+    plan = np.atleast_2d(plan) if plan is not None and np.size(plan) else None
 
     sync = read_table(mat, "sync")
     ft = read_table(mat, "netftdata")
@@ -112,6 +116,8 @@ def load_run(path, channels):
         run = {
             "path": path,
             "radius": radius,
+            "repeat": repeat,
+            "plan": plan,
             "sync_t": sync[1][:, 0],
             "sync_code": np.rint(column(sync, lambda n: n != "ROStimestamp",
                                         "/sync")).astype(int),
@@ -147,7 +153,10 @@ def extract_taps(run, args):
                         if code % 10 == EVENT_DESCEND})
     has_z = "z" in run
     for waypoint in waypoints:
-        if args.waypoints and waypoint not in args.waypoints:
+        # A --repeat run tapped scattered points around the apex, all of them
+        # wanted; the waypoint filter is for the fixed five-point layout, where
+        # waypoints 2-5 sit on a 30 degree slope.
+        if args.waypoints and not run["repeat"] and waypoint not in args.waypoints:
             continue
         t_desc = first_time(run, waypoint * 10 + EVENT_DESCEND)
         t_contact = first_time(run, waypoint * 10 + EVENT_CONTACT)
@@ -252,7 +261,12 @@ def build_dataset(args):
             X.append(array)
             y.append(round(kappa, 6))
             groups.append(group)
-            meta.append((os.path.basename(run["path"]), waypoint))
+            plan = run["plan"]
+            if plan is not None and waypoint - 1 < len(plan):
+                dx, dy, yaw = (float(v) for v in plan[waypoint - 1][:3])
+            else:
+                dx = dy = yaw = float("nan")
+            meta.append((os.path.basename(run["path"]), waypoint, dx, dy, yaw))
     return (np.array(X), np.array(y), np.array(groups), meta, report,
             channel_names(args, has_z))
 
@@ -362,7 +376,9 @@ def main(args):
                        % (args.representation, args.points))
     np.savez(out + "_dataset.npz", X=X, y=y, groups=groups,
              channels=np.array(names), files=np.array([m[0] for m in meta]),
-             waypoints=np.array([m[1] for m in meta]))
+             waypoints=np.array([m[1] for m in meta]),
+             offsets=np.array([m[2:4] for m in meta]),
+             yaws=np.array([m[4] for m in meta]))
     import joblib
     final = candidates[args.model].fit(features, y)
     joblib.dump({"model": final, "classes": classes, "channels": names,
