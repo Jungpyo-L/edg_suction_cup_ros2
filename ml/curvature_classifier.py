@@ -47,8 +47,12 @@ EVENT_CONTACT = 2
 EVENT_STOP = 3
 
 # Pre-contact samples are the baseline each channel is measured from. The last
-# stretch before contact is left out of it, since the cup is already loading.
+# stretch before contact is left out of it, since the cup is already loading,
+# and the quiet moment at hover before the descent is taken in: the descent
+# alone is about a tenth of a second at 3 mm of hover and 25 mm/s, which is
+# only a handful of pressure samples, and fewer still at a lower hover.
 BASELINE_GUARD = 0.02
+BASELINE_LEAD = 0.2
 MIN_BASELINE_SAMPLES = 3
 
 
@@ -182,7 +186,7 @@ def tap_signals(run, waypoint):
         return None, "unfinished"
 
     def baseline(t, values):
-        inside = (t >= t_desc) & (t <= t_contact - BASELINE_GUARD)
+        inside = ((t >= t_desc - BASELINE_LEAD) & (t <= t_contact - BASELINE_GUARD))
         if inside.sum() < MIN_BASELINE_SAMPLES:
             return None
         return float(np.median(values[inside]))

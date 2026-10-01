@@ -746,6 +746,12 @@ TAP_LOOP_PERIOD = 0.001
 POST_STOP_LISTEN = 0.05
 TAP_REASONS = ("force", "indent limit", "search limit", "timeout",
                "sensor stalled")
+# --log-tap-only keeps this much before each descent as well. The cup is
+# sitting still at hover then, being biased, which is the quietest stretch of
+# the whole run and exactly the baseline every channel is measured from. The
+# descent itself is too short to count on for it: at 3 mm of hover and 25 mm/s
+# only a tenth of a second passes before contact.
+TRIM_LEAD = 0.25
 
 
 class TapWatcher:
@@ -980,10 +986,11 @@ def _in_windows(line, windows):
 def trim_to_taps(file_names):
     """Cut this run's CSVs down to the tap windows, in place.
 
-    Each window runs from EVENT_DESCEND to EVENT_PRELOAD for one waypoint: the
-    start of the descent to the moment it was stopped, including the listen
-    after stopL, so the peak is in. The approach from hover is kept because it
-    is the pre-contact baseline each pressure channel is measured against.
+    Each window runs from TRIM_LEAD before EVENT_DESCEND to EVENT_PRELOAD for
+    one waypoint: the still moment at hover while the sensor is biased, then
+    the descent, through to the stop and the listen after it that catches the
+    peak. The quiet lead-in and the approach are both kept - they are the
+    baseline every channel is measured against.
 
     Cut after the fact rather than by switching the logger on and off per tap:
     each enable re-runs topic discovery, which can take seconds, and opens a
@@ -1014,7 +1021,7 @@ def trim_to_taps(file_names):
             except ValueError:
                 continue
             if event == EVENT_DESCEND:
-                starts.setdefault(waypoint, t)
+                starts.setdefault(waypoint, t - TRIM_LEAD)
             elif event == EVENT_PRELOAD:
                 ends.setdefault(waypoint, t)
     windows = [(start, ends.get(waypoint, float("inf")))
