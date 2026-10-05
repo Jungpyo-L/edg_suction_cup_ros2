@@ -19,6 +19,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   src/curve_sweep_experiment.py
   src/data_logger.py
   src/Demo_Lateral_positioning_air.py
+  src/JP_characterization_lateral_positioning.py
   src/ESP32_PWM.py
   src/ESP32_Pressure.py
   src/ft_monitor.py

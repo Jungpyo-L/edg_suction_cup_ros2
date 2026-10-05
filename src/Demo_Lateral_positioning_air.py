@@ -44,7 +44,7 @@ def main(args):
         rtde_help = rtdeHelp(125, node=node)
         time.sleep(0.5)
         file_help = fileSaveHelp()
-        adaptMotionHelp(dw=0.5, d_lat=2e-3, d_z=0.1e-3)
+        adpt_help = adaptMotionHelp(d_w=0.5, d_lat=2e-3, d_z=0.1e-3)
         search_help = hapticSearch2DHelp(
             d_lat=5e-3,
             d_yaw=1.5,
