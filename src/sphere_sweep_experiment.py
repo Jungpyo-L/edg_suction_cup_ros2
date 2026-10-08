@@ -1405,6 +1405,46 @@ def main(args):
     base_rotation = R.from_rotvec(ROTVEC_DEFAULT)
     orientation_fixed = base_rotation.as_quat()
 
+    def recover(what):
+        """Stop logging, bring the arm somewhere safe, and save what there is.
+
+        Deaf to interrupts while it runs: a second Ctrl-C here would abort the
+        recovery and leave the cup pressed against the sphere, which is the
+        exact situation this exists to prevent.
+        """
+        previous_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            if data_logger_client is not None:
+                try:
+                    call_enable_service(node, data_logger_client, False)
+                    time.sleep(0.2)
+                except Exception as exc:
+                    print("  could not stop the data logger: %s" % exc)
+
+            if rtde_help is not None:
+                retreat_to_home(rtde_help, travel_z, orientation_fixed,
+                                go_home=not args.no_home)
+
+            if args.log_tap_only and logging_response is not None:
+                try:
+                    trim_to_taps(logging_response.output_file_name)
+                except Exception as exc:
+                    print("  could not cut to the taps (%s), keeping all "
+                          "data." % exc)
+
+            # A partial sweep is still data, and being able to stop one part
+            # way through is the whole point.
+            if file_help is not None:
+                try:
+                    file_help.saveDataParams(
+                        args, appendTxt="Sphere_sweep_%s_%s" % (args.mode, what))
+                    file_help.clearTmpFolder()
+                    print("  partial run saved.")
+                except Exception as exc:
+                    print("  nothing saved: %s" % exc)
+        finally:
+            signal.signal(signal.SIGINT, previous_handler)
+
     def yaw_orientation(degrees):
         """The tool turned about its own axis, which points down, so this spins
         the cup in place without changing where it points."""
@@ -1626,45 +1666,19 @@ def main(args):
     except KeyboardInterrupt:
         print()
         print("============ Interrupted. Recovering the arm; do not press Ctrl-C again.")
-        # Deafen the process to further interrupts for the duration of the
-        # retreat. A second Ctrl-C here would abort the recovery and leave the
-        # cup pressed against the sphere, which is the exact situation this
-        # handler exists to prevent.
-        previous_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
-        try:
-            if data_logger_client is not None:
-                try:
-                    call_enable_service(node, data_logger_client, False)
-                    time.sleep(0.2)
-                except Exception as exc:
-                    print("  could not stop the data logger: %s" % exc)
-
-            if rtde_help is not None:
-                retreat_to_home(rtde_help, travel_z, orientation_fixed,
-                                go_home=not args.no_home)
-
-            if args.log_tap_only and logging_response is not None:
-                try:
-                    trim_to_taps(logging_response.output_file_name)
-                except Exception as exc:
-                    print("  could not cut to the taps (%s), keeping all "
-                          "data." % exc)
-
-            # Save whatever was recorded before the interrupt. A partial sweep
-            # is still data, and it is the whole point of being able to stop
-            # one part way through.
-            if file_help is not None:
-                try:
-                    file_help.saveDataParams(
-                        args, appendTxt="Sphere_sweep_%s_interrupted" % args.mode
-                    )
-                    file_help.clearTmpFolder()
-                    print("  partial run saved.")
-                except Exception as exc:
-                    print("  nothing saved: %s" % exc)
-        finally:
-            signal.signal(signal.SIGINT, previous_handler)
+        recover("interrupted")
         print("============ Recovered.")
+    except Exception as exc:
+        # Anything else that goes wrong mid-run gets the same recovery. Without
+        # this the arm simply stops where it was, which in an unattended run
+        # can mean a cup left pressed against a sphere until someone comes
+        # back. Re-raised afterwards, so a script running several sweeps in a
+        # row still sees the failure.
+        print()
+        print("============ %s: %s" % (type(exc).__name__, exc))
+        print("Recovering the arm and saving what was recorded.")
+        recover("failed")
+        raise
     finally:
         # Release the UR control program. Leaving it running is what made a
         # sweep occasionally do nothing until it was started a second time.
