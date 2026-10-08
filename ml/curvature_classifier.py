@@ -55,6 +55,11 @@ BASELINE_GUARD = 0.02
 BASELINE_LEAD = 0.2
 MIN_BASELINE_SAMPLES = 3
 
+# Why each tap stopped, as sphere_sweep_experiment.py records it: tap_results
+# holds the index into this tuple. Kept in step with TAP_REASONS there, which
+# cannot be imported here because that module needs ROS.
+TAP_REASONS = ("force", "indent limit", "search limit", "timeout", "sensor stalled")
+
 
 def read_table(mat, topic):
     """(column names, float array) for one logged topic, or None if absent.
@@ -111,6 +116,9 @@ def load_run(path, channels):
     # dx, dy, yaw per tap, in waypoint order, for runs that sampled a plan.
     plan = mat.get("tap_plan")
     plan = np.atleast_2d(plan) if plan is not None and np.size(plan) else None
+    # waypoint, z_contact, z_stop, peak force, reason - one row per completed tap.
+    results = mat.get("tap_results")
+    results = np.atleast_2d(results) if results is not None and np.size(results) else None
 
     sync = read_table(mat, "sync")
     ft = read_table(mat, "netftdata")
@@ -129,6 +137,9 @@ def load_run(path, channels):
             "repeat": repeat,
             "plan": plan,
             "tap_radius": tap_radius,
+            "tap_results": results,
+            "tap_speed": float(mat.get("tap_speed", float("nan"))),
+            "stamp": run_stamp(path),
             "sync_t": sync[1][:, 0],
             "sync_code": np.rint(column(sync, lambda n: n != "ROStimestamp",
                                         "/sync")).astype(int),
@@ -149,6 +160,29 @@ def load_run(path, channels):
         except KeyError:
             pass
     return run, None
+
+
+def run_stamp(path):
+    """The timestamp in a DataLog name, which identifies the run it came from."""
+    parts = os.path.basename(path).split("_")
+    return "_".join(parts[1:4]) if len(parts) > 3 else os.path.basename(path)
+
+
+def tap_outcome(run, waypoint):
+    """(peak force, why it stopped) as the run itself recorded them.
+
+    Carried through to the dataset so taps can be filtered afterwards without
+    reopening the .mat files: a tap that stopped on a distance limit never
+    reached the target force and is a different measurement from one that did.
+    """
+    results = run.get("tap_results")
+    if results is None:
+        return float("nan"), ""
+    row = results[results[:, 0] == waypoint]
+    if not len(row):
+        return float("nan"), ""
+    reason = int(row[0, 4])
+    return float(row[0, 3]), TAP_REASONS[reason] if reason < len(TAP_REASONS) else str(reason)
 
 
 def curvature_of(run, waypoint):
@@ -309,6 +343,11 @@ def build_dataset(args):
 
     # A channel has to exist in every run, or the arrays do not line up.
     has_z = bool(runs) and all("z" in run for run, _ in runs)
+    if runs and not has_z:
+        missing = [os.path.basename(run["path"]) for run, _ in runs if "z" not in run]
+        print("Indentation dropped from every tap: %d run(s) have no "
+              "/endEffectorPose logged, starting with %s"
+              % (len(missing), missing[0]))
     X, y, groups, meta = [], [], [], []
     for group, (run, samples) in enumerate(runs):
         for waypoint, array in samples:
@@ -323,7 +362,12 @@ def build_dataset(args):
                 dx, dy, yaw = (float(v) for v in plan[waypoint - 1][:3])
             else:
                 dx = dy = yaw = float("nan")
-            meta.append((os.path.basename(run["path"]), waypoint, dx, dy, yaw))
+            peak, reason = tap_outcome(run, waypoint)
+            meta.append({"source": os.path.basename(run["path"]),
+                         "run": run["stamp"], "waypoint": waypoint,
+                         "surface": class_name(kappa), "curvature": kappa,
+                         "dx": dx, "dy": dy, "yaw": yaw, "peak_force": peak,
+                         "stopped_on": reason, "tap_speed": run["tap_speed"]})
     return (np.array(X), np.array(y), np.array(groups), meta, report,
             channel_names(args, has_z))
 
@@ -437,18 +481,28 @@ def main(args):
     # otherwise replace the dataset under models built at the old length.
     out = os.path.join(os.path.expanduser(args.out), "curvature_%s_%dpt"
                        % (args.representation, args.points))
+    # "source" rather than "file": np.savez takes its own `file` argument, and
+    # a column by that name would collide with it.
+    columns = ["source", "run", "waypoint", "surface", "curvature", "dx", "dy",
+               "yaw", "peak_force", "stopped_on", "tap_speed"]
     np.savez(out + "_dataset.npz", X=X, y=y, groups=groups,
-             channels=np.array(channels), files=np.array([m[0] for m in meta]),
-             waypoints=np.array([m[1] for m in meta]),
-             offsets=np.array([m[2:4] for m in meta]),
-             yaws=np.array([m[4] for m in meta]))
+             channels=np.array(channels),
+             **{name: np.array([row[name] for row in meta]) for name in columns})
+    # The same per-tap facts as a table, for filtering by eye or in a
+    # spreadsheet before training on a subset.
+    with open(out + "_taps.csv", "w") as handle:
+        handle.write(",".join(columns) + "\n")
+        for row in meta:
+            handle.write(",".join("%s" % row[name] for name in columns) + "\n")
     import joblib
     final = candidates[args.model].fit(features, targets)
     joblib.dump({"model": final, "classes": names, "curvatures": classes,
                  "channels": channels, "config": vars(args)},
                 out + "_%s.joblib" % args.model)
     print()
-    print("Dataset: %s_dataset.npz" % out)
+    print("Dataset: %s_dataset.npz (X, y, groups, and one column per tap: %s)"
+          % (out, ", ".join(columns)))
+    print("Per-tap table: %s_taps.csv" % out)
     print("Model (%s, fitted on all %d taps): %s_%s.joblib"
           % (args.model, len(y), out, args.model))
 
