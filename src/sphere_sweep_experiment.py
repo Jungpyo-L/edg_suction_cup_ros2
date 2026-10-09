@@ -20,6 +20,7 @@ import rclpy
 from geometry_msgs.msg import PointStamped, WrenchStamped
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import Int16
 
 from suction_cup.srv import Enable
@@ -196,6 +197,8 @@ def jog_to_apex(rtde_help, apex, orientation, args):
     print("press Enter. All three axes are read from the arm at that moment.")
     print("  w/s  +x/-x     a/d  +y/-y     r/f  +z/-z")
     print("  [ ]  step down/up (now %.1f mm)" % (step * 1e3))
+    print("  Shift + a move key  coarse step of %.0f mm - come down the last "
+          "few mm in fine steps" % (args.jog_coarse * 1e3))
     print("  <Enter> accept, x abort")
     print("Lateral moves happen at whatever height you are at, so lift before")
     print("crossing the sphere if you have come down onto it.")
@@ -233,7 +236,8 @@ def jog_to_apex(rtde_help, apex, orientation, args):
         if direction is None:
             continue
 
-        moved = target + np.asarray(direction) * step
+        moved = target + np.asarray(direction) * (
+            args.jog_coarse if key.isupper() else step)
         # A jog may have to cross to another sphere, which --max-offset, the
         # limit on where a waypoint may sit, is far too tight for.
         limit = args.max_offset if args.jog_range is None else args.jog_range
@@ -1068,6 +1072,7 @@ def validate_args(args):
         "--tap-speed": args.tap_speed,
         "--tap-acc": args.tap_acc,
         "--max-indent": args.max_indent,
+        "--jog-coarse": args.jog_coarse,
         "--apex-samples": args.apex_samples,
         "--apex-timeout": args.apex_timeout,
     }
@@ -1394,7 +1399,11 @@ def main(args):
         print("Force mode: descending to %.2f N contact, then %.1f mm preload."
               % (args.contact_force, args.preload_depth * 1e3))
 
-    rclpy.init()
+    # rclpy's own Ctrl-C handler shuts ROS down the moment the key is pressed,
+    # before recover() has run, and the recovery then waits on a ROS that is
+    # gone. Without it Ctrl-C is a plain KeyboardInterrupt and ROS stays up
+    # until the finally block below.
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = rclpy.create_node("sphere_sweep_experiment")
     ft_help = file_help = rtde_help = None
     tap_watch = None
@@ -1416,16 +1425,18 @@ def main(args):
         """
         previous_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
+            # The arm before anything else: stopping the logger can wait up to
+            # its service timeout, and the cup may be pressed on a sphere.
+            if rtde_help is not None:
+                retreat_to_home(rtde_help, travel_z, orientation_fixed,
+                                go_home=not args.no_home)
+
             if data_logger_client is not None:
                 try:
                     call_enable_service(node, data_logger_client, False)
                     time.sleep(0.2)
                 except Exception as exc:
                     print("  could not stop the data logger: %s" % exc)
-
-            if rtde_help is not None:
-                retreat_to_home(rtde_help, travel_z, orientation_fixed,
-                                go_home=not args.no_home)
 
             if args.log_tap_only and logging_response is not None:
                 try:
@@ -1796,6 +1807,9 @@ if __name__ == "__main__":
     parser.add_argument("--jog-step", type=float, default=0.001,
                         help="starting jog increment (m), halved with [ and "
                         "doubled with ]")
+    parser.add_argument("--jog-coarse", type=float, default=0.010,
+                        help="jog increment (m) when a move key is pressed with "
+                        "Shift, for crossing to a sphere quickly")
     parser.add_argument("--jog-height", type=float, default=None,
                         help="height above the starting apex estimate that the "
                         "jog opens at (m). Defaults to --hover-height. Give it "
