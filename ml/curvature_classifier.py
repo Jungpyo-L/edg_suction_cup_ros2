@@ -69,7 +69,11 @@ def read_table(mat, topic):
     """
     if topic + "_data" not in mat or topic + "_columnName" not in mat:
         return None
-    columns = [str(c).strip() for c in np.atleast_1d(mat[topic + "_columnName"])]
+    # The logger names columns after the message's slots, which carry a
+    # leading underscore: /netft_data._wrench._force._z. Dropped here so the
+    # names read as the fields they are, /netft_data.wrench.force.z.
+    columns = [str(c).strip().replace("._", ".")
+               for c in np.atleast_1d(mat[topic + "_columnName"])]
     data = np.atleast_2d(np.asarray(mat[topic + "_data"], dtype=object))
     if data.shape[1] != len(columns) and data.shape[0] == len(columns):
         data = data.T
@@ -141,8 +145,8 @@ def load_run(path, channels):
             "tap_speed": float(mat.get("tap_speed", float("nan"))),
             "stamp": run_stamp(path),
             "sync_t": sync[1][:, 0],
-            "sync_code": np.rint(column(sync, lambda n: n != "ROStimestamp",
-                                        "/sync")).astype(int),
+            "sync_code": np.rint(column(sync, lambda n: n.endswith(".data"),
+                                        "/sync data")).astype(int),
             "ft_t": ft[1][:, 0],
             "fz": column(ft, lambda n: n.endswith("force.z"), "force z"),
             "p_t": pressure[1][:, 0],

@@ -1028,14 +1028,22 @@ def trim_to_taps(file_names):
 
     starts, ends = {}, {}
     with open(sync[0]) as handle:
-        next(handle, None)
+        # The logger writes every field of the message - /sync._check_fields
+        # as well as /sync._data - so the event code is found by name.
+        header = next(handle, "").strip().split(",")
+        code = next((i for i, name in enumerate(header)
+                     if name.endswith("data")), None)
+        if code is None:
+            print("--log-tap-only: no data column in the /sync log %s, keeping "
+                  "all data." % header)
+            return 0
         for line in handle:
             fields = line.strip().split(",")
-            if len(fields) < 2:
+            if len(fields) <= code:
                 continue
             try:
                 t = float(fields[0])
-                waypoint, event = divmod(int(float(fields[1])), 10)
+                waypoint, event = divmod(int(float(fields[code])), 10)
             except ValueError:
                 continue
             if event == EVENT_DESCEND:
@@ -1600,24 +1608,44 @@ def main(args):
             rclpy.spin_once(node, timeout_sec=0.0)
 
         started = time.monotonic()
+        # Where the last tap was, while the tool waits above it. Taps at one
+        # spot differ only in yaw, so between them the cup turns at that spot's
+        # own clearance instead of climbing to the travel plane, which is set
+        # by the tallest sphere and can be several centimetres higher.
+        spot_xy = None
         for index, (label, touch_xyz) in enumerate(zip(labels, waypoints), start=1):
             hover_xyz = touch_xyz + np.array([0.0, 0.0, args.hover_height])
-            # The cup turns as it crosses in the travel plane, so it is already
-            # at this tap's yaw before it comes anywhere near the surface.
+            # The cup turns while it is up and clear, so it is already at this
+            # tap's yaw before it comes anywhere near the surface.
             orientation = yaw_orientation(yaw_plan[index - 1])
             hover = rtde_help.getPoseObj(list(hover_xyz), orientation)
             travel = rtde_help.getPoseObj(
                 [touch_xyz[0], touch_xyz[1], travel_z], orientation
             )
+            # Never above the travel plane: touch_xyz sits at or below its own
+            # sphere's apex, and the travel plane is the tallest apex plus the
+            # same height.
+            spot = rtde_help.getPoseObj(
+                [touch_xyz[0], touch_xyz[1], touch_xyz[2] + args.travel_height],
+                orientation)
+            same_spot = (spot_xy is not None
+                         and np.allclose(spot_xy, touch_xyz[:2], atol=1e-6))
 
             print("--- %s  %s ---"
                   % (label, progress(index - 1, len(waypoints), started)))
             gate("Press <Enter> to cycle to next hover pose")  # gates handle timing
-            # Cross to this waypoint in the travel plane first, then come
-            # straight down. The previous waypoint left the tool up here, so
-            # this move is lateral only.
+            # Reach this waypoint from above, then come straight down: at the
+            # same spot just turn in place, otherwise go up to the travel plane
+            # and cross there, so nothing moves sideways near a sphere.
             publish_event(index, EVENT_TRAVEL)
-            rtde_help.goToPose(travel)
+            if same_spot:
+                rtde_help.goToPose(spot)
+            else:
+                if spot_xy is not None:
+                    # Up out of the last spot before crossing to this one.
+                    rtde_help.goToPose(rtde_help.getPoseObj(
+                        [spot_xy[0], spot_xy[1], travel_z], orientation))
+                rtde_help.goToPose(travel)
             rtde_help.goToPose(hover)
 
             if offset_mode:
@@ -1644,8 +1672,10 @@ def main(args):
                     z_stop, peak, TAP_REASONS.index(reason),
                 ])
                 args.tap_results = np.array(tap_results)
-                # No dwell: straight up to the travel plane for the next point.
-                rtde_help.goToPose(travel)
+                # No dwell: straight up clear of this spot. The next waypoint
+                # decides whether it needs the travel plane.
+                rtde_help.goToPose(spot)
+                spot_xy = touch_xyz[:2].copy()
                 time.sleep(0.1)
                 continue
             else:
@@ -1670,6 +1700,12 @@ def main(args):
             # so the cup is never in contact while moving laterally.
             rtde_help.goToPose(travel)
             time.sleep(0.1)
+
+        if spot_xy is not None:
+            # The last tap left the tool above its own spot; home is reached
+            # from the travel plane, like every other crossing.
+            rtde_help.goToPose(rtde_help.getPoseObj(
+                [spot_xy[0], spot_xy[1], travel_z], orientation))
 
         call_enable_service(node, data_logger_client, False)
         time.sleep(0.2)
