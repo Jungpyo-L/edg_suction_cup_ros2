@@ -180,13 +180,10 @@ def tap_outcome(run, waypoint):
     reached the target force and is a different measurement from one that did.
     """
     results = run.get("tap_results")
-    if results is None:
-        return float("nan"), ""
-    row = results[results[:, 0] == waypoint]
+    row = [] if results is None else results[results[:, 0] == waypoint]
     if not len(row):
         return float("nan"), ""
-    reason = int(row[0, 4])
-    return float(row[0, 3]), TAP_REASONS[reason] if reason < len(TAP_REASONS) else str(reason)
+    return float(row[0, 3]), TAP_REASONS[int(row[0, 4])]
 
 
 def curvature_of(run, waypoint):
