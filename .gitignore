@@ -12,3 +12,6 @@ log/
 
 # Local experiment data (.mat runs, datasets, plots) - never uploaded.
 data/
+
+# Local figures from the experiments - never uploaded.
+figures/
