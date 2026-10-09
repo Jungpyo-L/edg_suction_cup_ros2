@@ -1374,6 +1374,17 @@ def print_planned_poses(labels, offsets, waypoints, spheres, apex_frame, args):
                      np.round(touch_xyz, 5)))
 
 
+def progress(done, total, started, width=20):
+    """'[#####...............] 30/120  ~12 min left', the estimate taken from
+    the pace of the waypoints done so far."""
+    filled = width * done // total
+    text = "[%s%s] %d/%d" % ("#" * filled, "." * (width - filled), done, total)
+    if done:
+        left = (time.monotonic() - started) / done * (total - done)
+        text += "  ~%d min left" % math.ceil(left / 60.0)
+    return text
+
+
 def report_tap(label, z_contact, z_stop, peak, reason, tap_force):
     if z_contact is None:
         print("  %-12s tap: no contact, stopped at z=%.5f on %s, peak |Fz|=%.2f N"
@@ -1588,6 +1599,7 @@ def main(args):
             sync_pub.publish(Int16(data=index * 10 + event))
             rclpy.spin_once(node, timeout_sec=0.0)
 
+        started = time.monotonic()
         for index, (label, touch_xyz) in enumerate(zip(labels, waypoints), start=1):
             hover_xyz = touch_xyz + np.array([0.0, 0.0, args.hover_height])
             # The cup turns as it crosses in the travel plane, so it is already
@@ -1598,7 +1610,8 @@ def main(args):
                 [touch_xyz[0], touch_xyz[1], travel_z], orientation
             )
 
-            print("--- %s ---" % label)
+            print("--- %s  %s ---"
+                  % (label, progress(index - 1, len(waypoints), started)))
             gate("Press <Enter> to cycle to next hover pose")  # gates handle timing
             # Cross to this waypoint in the travel plane first, then come
             # straight down. The previous waypoint left the tool up here, so
