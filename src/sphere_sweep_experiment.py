@@ -806,8 +806,20 @@ class TapWatcher:
         self.executor.shutdown(timeout_sec=1.0)
         self.node.destroy_node()
 
-    def measure_rate(self, duration=1.0):
-        """Samples per second actually arriving - measured, not assumed."""
+    def measure_rate(self, duration=1.0, wait=10.0):
+        """Samples per second actually arriving - measured, not assumed.
+
+        Timed from the first sample, not from now: a new subscription takes a
+        moment to be matched to the publisher, sometimes over a second, and
+        counting that as silence reads a healthy sensor as slow or dead.
+        Returns 0 if nothing arrives within `wait` seconds.
+        """
+        deadline = time.monotonic() + wait
+        while self.seconds_since_sample() == float("inf"):
+            if time.monotonic() > deadline:
+                self.rate = 0.0
+                return self.rate
+            time.sleep(0.01)
         with self.lock:
             start_count = self.count
         start = time.monotonic()
@@ -883,8 +895,9 @@ def check_tap_speed(args, rate):
     """Refuse a --tap-speed the force sensor is too slow to keep up with."""
     if rate <= 0:
         raise RuntimeError(
-            "No /netft_data arriving - tap mode needs the force sensor. Check "
-            "that netft_node is running and the ATI sensor IP is reachable.")
+            "No /netft_data arrived within 10 s - tap mode needs the force "
+            "sensor. Check that netft_node is running and the ATI sensor IP is "
+            "reachable.")
     per_sample = args.tap_speed / rate
     allowed = rate * MAX_TRAVEL_PER_SAMPLE * (1.0 + RATE_SLACK)
     print("Force sensor at %.0f Hz: at %.1f mm/s the cup moves %.3f mm between "
