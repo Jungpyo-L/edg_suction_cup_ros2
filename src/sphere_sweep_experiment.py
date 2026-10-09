@@ -407,7 +407,7 @@ class ApexListener:
 
 
 def sampling_plan(count, jitter, yaws, seed, yaw_jitter=0.0, yaw_span=120.0,
-                  shuffle=True):
+                  shuffle=True, yaw_start=0.0):
     """`count` contact points within `jitter` of the apex, each tapped at every
     yaw angle.
 
@@ -425,7 +425,7 @@ def sampling_plan(count, jitter, yaws, seed, yaw_jitter=0.0, yaw_span=120.0,
     leave the near-apex tilts thin.
 
     Each yaw is dithered within +/- `yaw_jitter` of its grid angle, wrapped
-    into the span. The grid alone would mean that however many runs are
+    into the span, which runs from `yaw_start` to `yaw_start + yaw_span`. The grid alone would mean that however many runs are
     recorded, the cup is only ever seen at the same handful of rotations, and
     anything used at an angle between them meets something it has never seen.
     Dithering covers the whole range while keeping the yaws balanced, which
@@ -448,7 +448,8 @@ def sampling_plan(count, jitter, yaws, seed, yaw_jitter=0.0, yaw_span=120.0,
             angle = 2.0 * np.pi * rng.random()
         for yaw in yaws:
             if yaw_jitter > 0.0:
-                yaw = (yaw + rng.uniform(-yaw_jitter, yaw_jitter)) % yaw_span
+                yaw = yaw_start + (yaw - yaw_start + rng.uniform(
+                    -yaw_jitter, yaw_jitter)) % yaw_span
             plan.append((radius * np.cos(angle), radius * np.sin(angle), yaw))
     if shuffle:
         plan = [plan[i] for i in rng.permutation(len(plan))]
@@ -560,7 +561,7 @@ def multi_sphere_plan(radii, apexes, yaws, args):
         jitter = sphere_jitter(radius, args)
         _, offsets, plan_yaws = sampling_plan(
             args.repeat, jitter, yaws, args.seed + index, args.yaw_jitter,
-            args.yaw_span, shuffle=False)
+            args.yaw_span, shuffle=False, yaw_start=args.yaw_start)
         per_sphere.append((radius, np.asarray(apex, dtype=float), offsets,
                            plan_yaws, jitter))
 
@@ -1194,7 +1195,8 @@ def yaw_grid(args):
         # Half a grid step: the dithered angles of neighbouring grid points
         # then meet, so the whole span is covered across runs.
         args.yaw_jitter = args.yaw_span / (2.0 * args.yaws)
-    return np.linspace(0.0, args.yaw_span, args.yaws, endpoint=False)
+    return args.yaw_start + np.linspace(0.0, args.yaw_span, args.yaws,
+                                        endpoint=False)
 
 
 def plan_offsets(args):
@@ -1220,7 +1222,7 @@ def plan_offsets(args):
         jitter = sphere_jitter(args.radius, args)
         labels, offsets, yaw_plan = sampling_plan(
             args.repeat, jitter, yaws, args.seed, args.yaw_jitter,
-            args.yaw_span)
+            args.yaw_span, yaw_start=args.yaw_start)
         print("Repeat mode: the apex plus %d points within %.1f mm of it, each "
               "tapped at yaw %s deg +/- %.0f - %d taps, shuffled, seed %d."
               % (args.repeat - 1, jitter * 1e3,
@@ -1846,6 +1848,10 @@ if __name__ == "__main__":
                         "120 is one chamber spacing, so with three identical "
                         "chambers it covers every distinct orientation, and it "
                         "is as far as the tubing allows")
+    parser.add_argument("--yaw-start", type=float, default=0.0,
+                        help="--repeat: where the yaw span begins (deg), "
+                        "relative to the jog orientation. -30 with --yaw-span "
+                        "60 covers 30 degrees either side of it")
     parser.add_argument("--seed", type=int, default=None,
                         help="--repeat: seed for the sampling plan. Recorded in "
                         "the .mat either way, so a run can be repeated exactly")
