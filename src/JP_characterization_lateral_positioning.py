@@ -17,6 +17,7 @@ from std_msgs.msg import Int8
 from helperFunction.adaptiveMotion import adaptMotionHelp
 from helperFunction.fileSaveHelper import fileSaveHelp
 from helperFunction.FT_callback_helper import FT_CallbackHelp
+from helperFunction.keyboard_jog import jog
 from helperFunction.ros2_helpers import call_enable_service
 from helperFunction.rtde_helper import rtdeHelp
 from helperFunction.SuctionP_callback_helper import P_CallbackHelp
@@ -36,6 +37,9 @@ from suction_cup.srv import Enable
 # disengage_by_corner: fallback hover poses keyed by --corner (90 / 180 / 270)
 # =============================================================================
 ACTIVE_SETUP = "default"
+
+P_MAX_PA = 64400.0          # sealed vacuum on a flat surface
+SEAL_CHECK_FRAC = 0.8
 
 SETUPS = {
     # Old cell values kept as a starting point — measure and replace for new HW.
@@ -201,6 +205,20 @@ def main(args):
         rtde_help.goToPose(disengage_pose)
         time.sleep(0.1)
 
+        if args.jog_contact:
+            # Set the contact point by hand instead of trusting the stored disengage pose: the stored heights differ
+            # per object (corner 180: 18.0 mm, 90/270: 17.0 mm), so the same --deformation pressed some objects less.
+            start_z = list(rtde_help.rtde_r.getActualTCPPose())[2]
+            contact = jog(rtde_help, "contact: lip just touching the top, cup centred on the edge / corner (x offset 0)",
+                          z_floor=start_z - 0.030)
+            disengage_position_init = contact[:3]
+            args.disengagePosition_init = disengage_position_init
+            args.contact_position = disengage_position_init
+            print("contact point [m]: ", np.round(disengage_position_init, 5))
+            disengage_pose = rtde_help.getPoseObj(disengage_position_init, set_orientation)
+            rtde_help.goToPose(disengage_pose)
+            time.sleep(0.1)
+
         p_help.startSampling()
         time.sleep(1)
         spin_briefly(node, n=20)
@@ -249,6 +267,35 @@ def main(args):
 
             with open(file_help.ResultSavingDirectory + "/engage_z.p", "wb") as engage_z_file:
                 pickle.dump(engage_z, engage_z_file)
+
+        args.engage_z = engage_z
+        if args.seal_check_x is not None:
+            # Fully covered reference: every chamber should reach about P_max (64.4 kPa). A low reading here means the
+            # cup or the object leaks, independent of the offset/yaw sweep.
+            input("Press <Enter> for the seal check at x offset %.1f mm" % args.seal_check_x)
+            check_position = copy.deepcopy(disengage_position_init)
+            check_position[0] += args.seal_check_x * 0.001
+            rtde_help.goToPose(rtde_help.getPoseObj(check_position, yaw_quat(default_yaw)))
+            p_help.startSampling()
+            time.sleep(0.3)
+            spin_briefly(node, n=10)
+            p_help.setNowAsOffset()
+            check_position[2] = engage_z
+            rtde_help.goToPose(rtde_help.getPoseObj(check_position, yaw_quat(default_yaw)))
+            target_pwm_pub.publish(Int8(data=DUTYCYCLE_100))
+            time.sleep(1.5)
+            spin_briefly(node, n=10)
+            args.seal_check_pressure = list(p_help.four_pressure)
+            args.seal_check_force = ft_help.averageFz_noOffset
+            args.seal_check_tcp_z = list(rtde_help.rtde_r.getActualTCPPose())[2]
+            target_pwm_pub.publish(Int8(data=DUTYCYCLE_0))
+            check_position[2] = disengage_position_init[2]
+            rtde_help.goToPose(rtde_help.getPoseObj(check_position, yaw_quat(default_yaw)))
+            p_help.stopSampling()
+            weak = [i for i, p in enumerate(args.seal_check_pressure) if -p < SEAL_CHECK_FRAC * P_MAX_PA]
+            print("seal check: chamber vacuum %s Pa, Fz %.2f N" % (np.round(args.seal_check_pressure), args.seal_check_force))
+            if weak:
+                print("WARNING: chambers %s below %.0f %% of P_max; the cup or the object leaks." % (weak, 100 * SEAL_CHECK_FRAC))
 
         input("Press <Enter> to start to data collection")
         start_angle_flag = True
@@ -303,6 +350,7 @@ def main(args):
                 p_init = p_help.four_pressure
                 f_normal = ft_help.averageFz_noOffset
                 args.normalForceActual = f_normal
+                args.tcp_z_actual = list(rtde_help.rtde_r.getActualTCPPose())[2]
                 args.pressure_avg = p_init
                 p_vac = p_help.P_vac
 
@@ -469,8 +517,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--deformation",
         type=float,
-        help="normal deformation during data collection (mm)",
-        default=4.0,
+        help="normal deformation during data collection (mm); the Jan-Feb 2025 data used 5",
+        default=5.0,
+    )
+    parser.add_argument(
+        "--jog_contact",
+        type=str2bool,
+        help="set the contact point (lip just touching, x offset 0) by keyboard jog instead of the stored disengage pose",
+        default=False,
+    )
+    parser.add_argument(
+        "--seal_check_x",
+        type=float,
+        help="before the sweep, press at this x offset (mm, negative = more covered) and check the seal",
+        default=None,
     )
     parser.add_argument(
         "--zHeight",
