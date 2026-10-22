@@ -39,6 +39,8 @@ class FakeUR:
         self.env, self.cal, self.cup = env, cal, cup
         self.pose = None
         self.first_seal = None
+        self.q6 = 0.0              # wrist 3 (rad); turning the tool about base +z by d turns wrist 3 by -d
+        self.ik_pose = None
         self.rtde_c = self.rtde_r = self
 
     def isPoseWithinSafetyLimits(self, pose):
@@ -47,8 +49,27 @@ class FakeUR:
     def getActualTCPPose(self):
         return list(self.pose)
 
+    def _turn(self, pose):
+        if self.pose is not None:
+            self.q6 -= np.radians(float(rf.wrap_deg(rf.tool_yaw_deg(pose) - rf.tool_yaw_deg(self.pose))))
+
     def moveL(self, pose, speed=None, acc=None, asynchronous=False):
+        self._turn(pose)                     # a Cartesian move takes the shortest rotation from the current wrist
         self.pose = list(pose)
+
+    def getActualQ(self):
+        return [0.0] * 5 + [self.q6]
+
+    def getInverseKinematics(self, pose, qnear):
+        self.ik_pose = list(pose)
+        return [0.0] * 5 + [qnear[5] - np.radians(float(rf.wrap_deg(rf.tool_yaw_deg(pose) - rf.tool_yaw_deg(self.pose))))]
+
+    def isJointsWithinSafetyLimits(self, q):
+        return abs(q[5]) <= 2 * np.pi
+
+    def moveJ(self, q, speed=None, acc=None, asynchronous=False):
+        self.q6 = q[5]
+        self.pose = list(self.ik_pose)
 
     def initPeriod(self):
         return 0
@@ -70,6 +91,7 @@ class FakeUR:
         # pressure needs a few ticks to reach the runner's 0.8 P_max, and the cup keeps moving meanwhile, as on the robot.
         (x0, yaw0), (x1, yaw1) = self.object_state(self.pose), self.object_state(pose)
         self.env.state = self.env.sim.step((x1 - x0) / dt, float(rf.wrap_deg(yaw1 - yaw0)) / dt)
+        self._turn(pose)
         if self.env.state['success'] and self.first_seal is None:
             self.first_seal = self.env.sim.tick
         self.pose = list(pose)
@@ -115,7 +137,7 @@ def run(ch, controller, seed, seal_frac, save=None):
     cal = Calibration(solve(pts), lay)
     cup = rf.CupConfig('fake', dict(chambers=ch, tcp_offset=[0] * 6, chamber_map=[int(i) for i in rng.permutation(ch)],
                                      body_offset_deg=float(rng.uniform(-180, 180)), calibrated=True))
-    args = Namespace(press_mm=5.0, settle_s=0.0, seal_frac=seal_frac, pmax_kpa=64.4, lookahead=0.1, gain=300.)
+    args = Namespace(press_mm=5.0, settle_s=0.0, seal_frac=seal_frac, pmax_kpa=64.4, lookahead=0.1, gain=300., q6_home_deg=0.)
     rows = [r for r in csv.DictReader(open('robot/fixture_final_subset_K10/trial_schedule.csv'))
             if int(r['chambers']) == ch and r['controller'] == controller]
     cases = {c['id']: c for c in final_inputs()[1]}

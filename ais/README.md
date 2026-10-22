@@ -78,6 +78,18 @@ measures each channel's direction against a known bore, so the old ROS1 hints ([
   cup offset and fixture rotation. Geometric seal tick equals the stored simulation in 598/600 trials; the 2 others are
   PPO 3ch episodes > 370 ticks that also diverge from float32 round-off alone.
 
+### Wrist 3 wind-up
+
+The yaw controllers turn the tool the same way every trial, and a moveL to the next start takes the shortest rotation
+from the current wrist, so wrist 3 used to wind up until the joint limit. Now (`ais_haptic/motion.py`) each trial
+starts with: lift to 30 mm above the object tops -> moveJ to the start pose with wrist 3 moved by whole turns to within
+180 deg of `--q6_home_deg` (default 0) -> moveL down. During a trial the runner stops with reason `joint_limit` if
+wrist 3 comes within 10 deg of +-360 deg; every trial logs wrist 3 before/after unwinding and its range.
+The chamber check unwinds the same way and scans in 15 deg steps from -172.5 to +172.5 deg (never a 180 deg step).
+`tools/test_wrist_unwind.py`, one fake UR through a whole 300-trial block: without unwinding wrist 3 reached -1251 deg
+(3ch) / -1487 deg (6ch) and 284 / 236 trials hit the limit; with it, -266 .. +208 deg and none.
+On the robot, check that the joint move at the travel height clears the fixture (watch the first few trials).
+
 ### Watching trials
 
 `tools/ais_replay_video.py <results dir> --trials ...` renders a trial as mp4 from the runner's files: top view in the

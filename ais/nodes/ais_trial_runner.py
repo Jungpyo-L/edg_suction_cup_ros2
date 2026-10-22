@@ -7,7 +7,8 @@
 #   ros2 run suction_cup ais_trial_runner.py --cup ch3 --trials 0-5 --step  # pilot, Enter before each trial
 #   ros2 run suction_cup ais_trial_runner.py --cup ch3                      # the whole 3-chamber block, resumable
 #
-# Per trial: hover above the start (tool yaw from the simulator start yaw) -> zero sensors in air -> descend to the
+# Per trial: lift to the travel height, moveJ above the start with wrist 3 unwound (ais_haptic.motion) ->
+# hover above the start (tool yaw from the simulator start yaw) -> zero sensors in air -> descend to the
 # contact height minus press_mm -> vacuum on, settle -> 50 Hz loop (controller -> servoL) until every chamber reaches
 # seal_frac * P_max (then hold 1 s), 10 s, the 30 mm object boundary, or a tracking fault -> vacuum off -> lift.
 # Matches the simulator: 10 mm/s, 10 deg/s, body-frame actions (ais_haptic.policy, ais_haptic.robot_frame).
@@ -34,11 +35,14 @@ from pathlib import Path
 
 import numpy as np
 
+from ais_haptic.motion import WRIST3_LIMIT_DEG, move_unwound, wrist3_deg
 from ais_haptic.policy import CONTROL_HZ, DURATION_S, P_MAX_PA, make_controller
 from ais_haptic.robot_frame import (BodyCommandIntegrator, load_cups, tool_pose, tool_tilt_deg,
                                                tool_yaw_deg, wrap_deg)
 
 HOVER_MM = 10.0
+TRAVEL_MM = 30.0           # free-space height for the joint move that unwinds the wrist
+WRIST3_MARGIN_DEG = 10.0   # stop a trial this close to the wrist 3 limit
 MOVE_SPEED, MOVE_ACC = 0.05, 0.3
 TOUCH_SPEED, TOUCH_ACC = 0.005, 0.1
 BOUNDARY_MM = 30.0
@@ -133,11 +137,15 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
         if not rtde.rtde_c.isPoseWithinSafetyLimits(pose):
             raise RuntimeError('Start pose outside the robot safety limits: %s' % np.round(pose, 4))
 
-    # approach in air, zero, press, vacuum on
+    # approach in air with the wrist unwound, zero, press, vacuum on
+    travel_z = plan.z_top + TRAVEL_MM / 1000.0
     current = list(rtde.rtde_r.getActualTCPPose())
-    if current[2] < plan.z_top + HOVER_MM / 1000.0:
-        current[2] = plan.z_top + HOVER_MM / 1000.0
+    if current[2] < travel_z:
+        current[2] = travel_z
         rtde.rtde_c.moveL(current, MOVE_SPEED, MOVE_ACC)
+    q6_before = wrist3_deg(rtde)
+    move_unwound(rtde, tool_pose([plan.xy[0], plan.xy[1], travel_z], plan.psi), args.q6_home_deg)
+    q6_start = wrist3_deg(rtde)
     rtde.rtde_c.moveL(hover, MOVE_SPEED, MOVE_ACC)
     time.sleep(0.3)
     io.zero_in_air()
@@ -151,6 +159,7 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
 
     log = {k: [] for k in ('t', 'sensor_pa', 'vacuum_sim_pa', 'action', 'target', 'actual', 'theta_cmd', 'obs')}
     reason, t0, seal_tick = 'timeout', time.monotonic(), None
+    q6_range = [q6_start, q6_start]
     io.sync(1)
     try:
         for tick in range(int(round(DURATION_S * CONTROL_HZ))):
@@ -158,6 +167,11 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
             sensor = io.pressure()
             vac = cup.sim_vacuum(sensor)
             actual = list(rtde.rtde_r.getActualTCPPose())
+            q6 = wrist3_deg(rtde)
+            q6_range[0], q6_range[1] = min(q6_range[0], q6), max(q6_range[1], q6)
+            if abs(q6) > WRIST3_LIMIT_DEG - WRIST3_MARGIN_DEG:
+                reason = 'joint_limit'
+                break
             if np.all(vac >= seal_pa):
                 reason, seal_tick = 'sealed', tick
                 break
@@ -208,6 +222,7 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
                    hold_min_vacuum_pa=(np.min(hold, axis=0).tolist() if hold else None),
                    start=dict(x_m=plan.xy[0], y_m=plan.xy[1], z_top_m=plan.z_top, body_yaw_deg=plan.theta, tool_yaw_deg=plan.psi),
                    frame=plan.frame,
+                   wrist3_deg=dict(before_unwind=q6_before, start=q6_start, min=q6_range[0], max=q6_range[1]),
                    raw_rate_hz=float((len(raw_t) - 1) / (raw_t[-1] - raw_t[0])) if len(raw_t) > 1 else None)
     arrays = {k: np.array(v) for k, v in log.items() if k != 'obs'}
     arrays['obs'] = np.array(log['obs']) if log['obs'] and len(log['obs'][0]) else np.zeros((0,))
@@ -320,6 +335,7 @@ if __name__ == '__main__':
     parser.add_argument('--pmax_kpa', type=float, default=P_MAX_PA / 1000, help='sealed vacuum measured this session')
     parser.add_argument('--lookahead', type=float, default=0.1, help='servoL lookahead time (s), 0.03-0.2')
     parser.add_argument('--gain', type=float, default=300.0, help='servoL gain, 100-2000')
+    parser.add_argument('--q6_home_deg', type=float, default=0.0, help='wrist 3 is unwound to within 180 deg of this before each trial')
     parser.add_argument('--schedule', default=repo + '/robot/fixture_final_subset_K10/trial_schedule.csv')
     parser.add_argument('--calibration', default=None, help='default <repo>/robot/calibration/fixture_calibration_<cup>.json')
     parser.add_argument('--results', default='~/EDG_Experiment/ais_robot_demo')

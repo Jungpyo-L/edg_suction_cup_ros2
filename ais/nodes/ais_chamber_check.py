@@ -30,12 +30,14 @@ from pathlib import Path
 import numpy as np
 import rclpy
 
+from ais_haptic.motion import move_unwound, wrist3_deg
 from ais_haptic.robot_frame import (fit_chamber_directions, load_cups, tool_pose, tool_yaw_deg,
                                                wrap_deg)
 from ais_haptic.ros_io import HapticRosIO
 from helperFunction.rtde_helper import rtdeHelp
 
 HOVER_MM = 10.0
+TRAVEL_MM = 30.0
 MOVE_SPEED, MOVE_ACC = 0.03, 0.2
 TOUCH_SPEED = 0.005
 MIN_SWING_PA = 200.0   # a channel that faces the bore at some yaw loses far more vacuum than this
@@ -110,13 +112,19 @@ def main(args):
         io.wait_for_pressure()
         psi0 = tool_yaw_deg(list(rtde.rtde_r.getActualTCPPose()))
         hover = lambda psi: tool_pose([cup_xy[0], cup_xy[1], z_top + HOVER_MM / 1000.0], psi)
-        input("Enter: move %.0f mm above the contact point (tool yaw stays %.1f deg) " % (HOVER_MM, psi0))
+        input("Enter: lift, then move %.0f mm above the contact point (tool yaw %.1f deg, wrist 3 unwound) " % (HOVER_MM, psi0))
+        current = list(rtde.rtde_r.getActualTCPPose())
+        current[2] = max(current[2], z_top + TRAVEL_MM / 1000.0)
+        rtde.rtde_c.moveL(current, MOVE_SPEED, MOVE_ACC)
+        move_unwound(rtde, tool_pose([cup_xy[0], cup_xy[1], z_top + TRAVEL_MM / 1000.0], psi0), args.q6_home_deg)
         rtde.rtde_c.moveL(hover(psi0), MOVE_SPEED, MOVE_ACC)
+        print("wrist 3 at %.1f deg; the scan turns it by about +-180 deg" % wrist3_deg(rtde))
         print("zeroing the sensors in air ...")
         io.zero_in_air()
         io.vacuum(True)
         time.sleep(1.0)
-        psis = psi0 + np.arange(-180.0, 180.0, args.step_deg)
+        # never a 180 deg step, whose direction would be undefined: start half a step past -180 and turn one way
+        psis = psi0 + np.arange(-180.0 + args.step_deg / 2, 180.0, args.step_deg)
         rows = []
         for k, psi in enumerate(psis):
             rtde.rtde_c.moveL(tool_pose([cup_xy[0], cup_xy[1], z_top + 0.002], psi), MOVE_SPEED, MOVE_ACC)
@@ -183,6 +191,7 @@ if __name__ == "__main__":
     parser.add_argument("--settle_s", type=float, default=0.5)
     parser.add_argument("--read_s", type=float, default=0.5)
     parser.add_argument("--write", action="store_true", help="store the fit in cups.json")
+    parser.add_argument("--q6_home_deg", type=float, default=0.0, help="wrist 3 is unwound near this before the scan")
     parser.add_argument("--repo", default="~/projects/2D_Haptic_Search")
     parser.add_argument("--cups", default="~/ros2_ws/src/suction_cup/ais/config/cups.json")
     main(parser.parse_args())
