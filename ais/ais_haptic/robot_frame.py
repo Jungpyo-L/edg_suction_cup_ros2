@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from .haptic_policy import CONTROL_HZ, SPEED_MM_S, YAW_RATE_DEG_S
+from .policy import CONTROL_HZ, SPEED_MM_S, YAW_RATE_DEG_S
 
 
 def wrap_deg(a):
@@ -45,7 +45,7 @@ def tool_tilt_deg(ur_pose):
 
 
 class CupConfig:
-    """One cup from config/haptic_cups.json."""
+    """One cup from ais/config/cups.json."""
 
     def __init__(self, name, entry):
         self.name = name
@@ -61,7 +61,7 @@ class CupConfig:
     def require_calibrated(self):
         if not self.calibrated or self.chamber_map is None or self.body_offset_deg is None:
             raise RuntimeError(f'Cup {self.name}: chamber_map / body_offset_deg are not measured yet. '
-                               'Run haptic_chamber_check.py first (or pass --dry-run).')
+                               'Run ais_chamber_check.py first (or pass --dry-run).')
 
     def sim_vacuum(self, sensor_pa):
         """Offset-corrected sensor reading (Pa, vacuum negative, channel order) -> simulator order, vacuum positive."""

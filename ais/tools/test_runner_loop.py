@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """End-to-end check of haptic_trial_runner.run_trial with the robot and the sensor replaced by the simulator.
 
-  cd ~/projects/2D_Haptic_Search && ~/miniconda3/envs/suctionRL/bin/python ~/ros2_ws/src/suction_cup/tools/test_runner_loop.py
+  cd ~/projects/2D_Haptic_Search && ~/miniconda3/envs/suctionRL/bin/python ~/ros2_ws/src/suction_cup/ais/tools/test_runner_loop.py \
+      [--save ~/EDG_Experiment/ais_sim_in_the_loop]   # also keep the trials for ais_replay_video.py
 A fake UR follows every servoL target exactly; the target is turned back into an object-frame cup pose and fed to the
 simulator (FinalEnvV2, as-built polygons, same noise seeds). The fake sensor returns the simulator pressures in a
 scrambled channel order, negative, through a random cup-to-tool yaw offset and a rotated fixture calibration.
@@ -18,12 +19,12 @@ from pathlib import Path
 
 import numpy as np
 
-PACKAGE = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PACKAGE / 'src'))
+PACKAGE = Path(__file__).resolve().parents[1]   # ais/
+sys.path.insert(0, str(PACKAGE))
 sys.path.insert(0, str(Path.cwd()))
-from helperFunction import haptic_robot_frame as rf  # noqa: E402
+from ais_haptic import robot_frame as rf  # noqa: E402
 
-spec = importlib.util.spec_from_file_location('runner', PACKAGE / 'src' / 'haptic_trial_runner.py')
+spec = importlib.util.spec_from_file_location('runner', PACKAGE / 'nodes' / 'ais_trial_runner.py')
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 runner.HOLD_AFTER_SEAL_S = runner.RELEASE_WAIT_S = 0.0
@@ -99,7 +100,7 @@ class FakeIO:
         return np.zeros(0), np.zeros(0), np.zeros((0, self.cup.chambers))
 
 
-def run(ch, controller, seed, seal_frac):
+def run(ch, controller, seed, seal_frac, save=None):
     from shapely.geometry import shape
     from tools.evaluate_v2_final import FinalEnvV2, final_inputs
     from tools.fixture_calibration import Calibration, solve
@@ -128,18 +129,20 @@ def run(ch, controller, seed, seal_frac):
         env.reset(options=dict(case=c, noise_seed=case_noise_seed(c['id']), model_params={}))
         plan = runner.Plan(row, cal, cup)
         ur = FakeUR(env, cal, cup); ur.obj = row['object']
-        ctrl, _ = runner.controller_for(row, cup, PACKAGE / 'policies')
+        ctrl, policy_path = runner.controller_for(row, cup, PACKAGE / 'policies')
         ur.pose = rf.tool_pose([plan.xy[0], plan.xy[1], plan.z_top + 0.05], plan.psi)
-        summary, _ = runner.run_trial(args, cup, plan, ur, FakeIO(env, cup), ctrl)
+        summary, arrays = runner.run_trial(args, cup, plan, ur, FakeIO(env, cup), ctrl)
+        if save:
+            runner.save_trial(Path(save), row, summary, arrays, args, policy_path)
         out.append(dict(case_id=row['case_id'], success=summary['success'], reason=summary['reason'],
                         ticks=summary['ticks'], first_seal=ur.first_seal))
     return cup, out
 
 
 def job(spec):
-    ch, controller, seed = spec
+    ch, controller, seed, save = spec
     _, never = run(ch, controller, seed, 2.0)       # no pressure stop: frame check
-    cup, stop = run(ch, controller, seed, 0.8)      # the runner default
+    cup, stop = run(ch, controller, seed, 0.8, save)  # the runner default
     return spec, cup, never, stop
 
 
@@ -147,10 +150,14 @@ def main():
     from concurrent.futures import ProcessPoolExecutor
     ref = {(r['controller'], r['chambers'], r['case_id']): r
            for r in json.loads(Path('outputs/robot_as_built_sim/episodes.json').read_text())}
-    specs = [(ch, c, 10 * ch + k) for ch in (3, 6) for k, c in enumerate(('ppo', 'greedy', 'yaw_momentum'))]
+    save = None
+    if '--save' in sys.argv:       # keep the 0.8 P_max trials in the runner's format (ais_replay_video.py reads them)
+        save = str(Path(sys.argv[sys.argv.index('--save') + 1]).expanduser())
+        Path(save).mkdir(parents=True, exist_ok=True)
+    specs = [(ch, c, 10 * ch + k, save) for ch in (3, 6) for k, c in enumerate(('ppo', 'greedy', 'yaw_momentum'))]
     ok = True
     with ProcessPoolExecutor(max_workers=len(specs)) as pool:
-        for (ch, controller, _), cup, never, stop in pool.map(job, specs):
+        for (ch, controller, _, _), cup, never, stop in pool.map(job, specs):
             stored = [ref[(controller, ch, o['case_id'])] for o in never]
             bad = [(o, s) for o, s in zip(never, stored)
                    if (o['first_seal'] is not None and o['first_seal'] <= 500) != s['success']

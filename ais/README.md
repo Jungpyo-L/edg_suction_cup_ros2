@@ -1,6 +1,20 @@
-# AIS robot demo: progress and decisions
+# AIS robot demo (haptic search on the UR10)
 
-Starting point: `~/projects/2D_Haptic_Search/docs/handoff/ROBOT_DEMO_HANDOFF.md`.
+Everything specific to the AIS paper's robot demonstration lives in this folder; the rest of the package is shared
+lab code. Starting point: `~/projects/2D_Haptic_Search/docs/handoff/ROBOT_DEMO_HANDOFF.md`.
+
+## Layout
+
+| Path | Contents |
+|---|---|
+| `nodes/ais_*.py` | ROS2 nodes, installed flat: `ros2 run suction_cup ais_<name>.py` |
+| `ais_haptic/` | Python package used by the nodes: `policy` (controllers), `robot_frame` (frames, cup config), `ros_io` (pressure / vacuum / sync) |
+| `config/cups.json` | per-cup TCP, lip radius, chamber map, body offset |
+| `policies/*.npz` | exported PPO / SAC actors |
+| `tools/` | policy export, tests, `ais_replay_video.py` |
+
+Shared lab code it uses unchanged: `src/helperFunction/rtde_helper.py`, `SuctionP_callback_helper.py`, and the node
+`src/ESP32_Pressure.py` (its serial reader was fixed for this demo, see below).
 Old ROS1 reference (read-only clone): `~/projects/ref/edg_suction_cup_ros1` (GitHub `Jungpyo-L/edg_suction_cup`, branch `2D_haptic_search`).
 
 ## Environment (2026-10-21)
@@ -19,11 +33,11 @@ As-built simulation of the same 100 starts: PPO 94/94 %, yaw–momentum 82/78 %,
 
 ## Step 1: controllers matching the simulator (done)
 
-- `src/helperFunction/haptic_policy.py` (numpy only): `PolicyController` (rl_env `mlp_h5s5_log` observation history + exported MLP), `HeuristicController` (greedy / yaw / momentum / yaw_momentum, 10 mm/s, 10 deg/s, tau 0.5 s), `limit_action`, `make_controller`.
+- `ais_haptic/policy.py` (numpy only): `PolicyController` (rl_env `mlp_h5s5_log` observation history + exported MLP), `HeuristicController` (greedy / yaw / momentum / yaw_momentum, 10 mm/s, 10 deg/s, tau 0.5 s), `limit_action`, `make_controller`.
   Input: chamber vacuum in Pa, positive, in simulator chamber order. Output: applied body-frame action in [-1, 1]^3.
   The heuristics only need yaw relative to the trial start (constant yaw offsets cancel).
-- `policies/*.npz`: deterministic actors exported by `tools/export_policy_npz.py --all` (suctionRL env). Each file stores the SHA-256 of its source `final.zip`.
-- `tools/test_policy_parity.py`: replays the 10 robot objects (as-built polygons) x 10 starts, every action from `haptic_policy`.
+- `policies/*.npz`: deterministic actors exported by `ais/tools/export_policy_npz.py --all` (suctionRL env). Each file stores the SHA-256 of its source `final.zip`.
+- `ais/tools/test_policy_parity.py`: replays the 10 robot objects (as-built polygons) x 10 starts, every action from `ais_haptic.policy`.
   Result 2026-10-21: all pass. Observations identical; action difference ≤ 3e-11 (heuristics), ≤ 3e-6 (PPO), ≤ 1.8e-5 (SAC, float32).
   Success matches `outputs/robot_as_built_sim/episodes.json` for all 600 stored episodes; one PPO 3ch episode seals one tick later (481 vs 480) from float32 rounding.
 - Cost: about 60 µs per tick in system Python.
@@ -36,18 +50,18 @@ Run order on the robot day:
 | # | Command | What it does |
 |---|---|---|
 | 1 | `ESP32_Pressure.py --ch 3` | now drains every serial line per 10 ms tick (it used to read one, capping the stream at 100 Hz and letting a faster stream lag) |
-| 2 | `haptic_pressure_check.py --ch 3 --note "air, vacuum off"` | receive rate, jitter, per-channel noise vs the simulator sensor model (144 Hz, sigma 6 Pa, 7-point MA) |
-| 3 | `haptic_fixture_calibration.py --cup ch3 --repeats 3` | vacuum off; keyboard jog (or `--freedrive`) into C0..C3, predicts the remaining bores after two; saves `2D_Haptic_Search/robot/calibration/fixture_calibration_ch3.json` |
-| 4 | `haptic_chamber_check.py --cup ch3 --bore C0 --write` | cup lip ~1 mm over a bore rim, full yaw scan; fits `chamber_map` and `body_offset_deg` in `config/haptic_cups.json` |
-| 5 | `haptic_trial_runner.py --cup ch3 --dry-run` | plan only (no ROS): start poses, controllers load |
-| 6 | `haptic_trial_runner.py --cup ch3 --trials 0-5 --step` | pilot trials, Enter before each |
-| 7 | `haptic_trial_runner.py --cup ch3` | the 300-trial block; rerun the same command to resume |
+| 2 | `ais_pressure_check.py --ch 3 --note "air, vacuum off"` | receive rate, jitter, per-channel noise vs the simulator sensor model (144 Hz, sigma 6 Pa, 7-point MA) |
+| 3 | `ais_fixture_calibration.py --cup ch3 --repeats 3` | vacuum off; keyboard jog (or `--freedrive`) into C0..C3, predicts the remaining bores after two; saves `2D_Haptic_Search/robot/calibration/fixture_calibration_ch3.json` |
+| 4 | `ais_chamber_check.py --cup ch3 --bore C0 --write` | cup lip ~1 mm over a bore rim, full yaw scan; fits `chamber_map` and `body_offset_deg` in `ais/config/cups.json` |
+| 5 | `ais_trial_runner.py --cup ch3 --dry-run` | plan only (no ROS): start poses, controllers load |
+| 6 | `ais_trial_runner.py --cup ch3 --trials 0-5 --step` | pilot trials, Enter before each |
+| 7 | `ais_trial_runner.py --cup ch3` | the 300-trial block; rerun the same command to resume |
 
 Repeat 3-7 with `--cup ch6` after swapping the cup (calibration and chamber check are per cup: TCP length differs).
 
-Files: `helperFunction/haptic_robot_frame.py` (frames, cup config, chamber fit, servoL target integrator),
-`helperFunction/haptic_ros.py` (pressure / vacuum / sync on a background-spun node, raw-stream recording),
-`config/haptic_cups.json` (TCP, lip radius, chamber map; `calibrated: false` until step 4).
+Files: `ais_haptic/robot_frame.py` (frames, cup config, chamber fit, servoL target integrator),
+`ais_haptic/ros_io.py` (pressure / vacuum / sync on a background-spun node, raw-stream recording),
+`ais/config/cups.json` (TCP, lip radius, chamber map; `calibrated: false` until step 4).
 Results: `~/EDG_Experiment/ais_robot_demo/trial_XXXX.{json,npz}` (per tick: sensor, simulator-order vacuum, action,
 servoL target, actual TCP pose, body yaw, policy observation; raw sensor stream; 1 s hold after a seal) and
 `session_*.json` (hashes of calibration, cup config, schedule, policies).
@@ -58,11 +72,19 @@ measures each channel's direction against a known bore, so the old ROS1 hints ([
 
 ### Verification (no robot)
 
-- `tools/test_robot_frame.py` (system Python): pose conventions, chamber fit for any wiring, integrator. All pass.
-- `tools/test_chamber_check.py` (suctionRL, simulator pressure model): bore-rim scans with random wiring/offset; directions recovered within 0.2 deg.
-- `tools/test_runner_loop.py` (suctionRL): `run_trial` with the UR and sensor replaced by the simulator, random wiring,
+- `ais/tools/test_robot_frame.py` (system Python): pose conventions, chamber fit for any wiring, integrator. All pass.
+- `ais/tools/test_chamber_check.py` (suctionRL, simulator pressure model): bore-rim scans with random wiring/offset; directions recovered within 0.2 deg.
+- `ais/tools/test_runner_loop.py` (suctionRL): `run_trial` with the UR and sensor replaced by the simulator, random wiring,
   cup offset and fixture rotation. Geometric seal tick equals the stored simulation in 598/600 trials; the 2 others are
   PPO 3ch episodes > 370 ticks that also diverge from float32 round-off alone.
+
+### Watching trials
+
+`tools/ais_replay_video.py <results dir> --trials ...` renders a trial as mp4 from the runner's files: top view in the
+object frame (as-built polygon, chambers coloured by vacuum, path, 30 mm boundary), chamber vacuum on a log axis with
+the success threshold, and the applied action. `--ref <dir>` overlays the same trial from another folder (simulation
+vs robot). `tools/test_runner_loop.py --save <dir>` keeps the simulator-in-the-loop trials in the same format;
+12 examples (3ch/6ch x PPO/greedy/yaw-momentum on two starts each) are in `~/EDG_Experiment/ais_sim_in_the_loop/videos/`.
 
 ### Finding: the success criterion differs from the simulator's
 

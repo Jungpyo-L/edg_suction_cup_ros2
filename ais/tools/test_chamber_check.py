@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check haptic_chamber_check.analyze_scan on scans synthesized with the simulator pressure model (pressure_v2).
 
-  cd ~/projects/2D_Haptic_Search && ~/miniconda3/envs/suctionRL/bin/python ~/ros2_ws/src/suction_cup/tools/test_chamber_check.py
+  cd ~/projects/2D_Haptic_Search && ~/miniconda3/envs/suctionRL/bin/python ~/ros2_ws/src/suction_cup/ais/tools/test_chamber_check.py
 A cup of radius 5 mm straddles the rim of a 23.4 mm bore; channels are wired in a random order with a random
 cup-to-tool yaw offset and a random robot-frame direction; 6 Pa noise. The fit must recover every channel direction.
 """
@@ -14,17 +14,17 @@ import numpy as np
 from shapely.affinity import affine_transform
 from shapely.geometry import Point, box
 
-PACKAGE = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PACKAGE / 'src'))
+PACKAGE = Path(__file__).resolve().parents[1]   # ais/
+sys.path.insert(0, str(PACKAGE))
 sys.path.insert(0, str(Path.cwd()))
 from haptic_search.physics import pressure_v2  # noqa: E402
-from helperFunction import haptic_robot_frame as rf  # noqa: E402
+from ais_haptic import robot_frame as rf  # noqa: E402
 
-for name in ('rclpy', 'helperFunction.haptic_ros', 'helperFunction.rtde_helper'):   # the analysis needs no ROS
+for name in ('rclpy', 'ais_haptic.ros_io', 'helperFunction.rtde_helper'):   # the analysis needs no ROS
     sys.modules[name] = types.ModuleType(name)
-sys.modules['helperFunction.haptic_ros'].HapticRosIO = object
+sys.modules['ais_haptic.ros_io'].HapticRosIO = object
 sys.modules['helperFunction.rtde_helper'].rtdeHelp = object
-spec = importlib.util.spec_from_file_location('chamber_check', PACKAGE / 'src' / 'haptic_chamber_check.py')
+spec = importlib.util.spec_from_file_location('chamber_check', PACKAGE / 'nodes' / 'ais_chamber_check.py')
 cc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cc)
 

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Check helperFunction/haptic_policy against the 2D_Haptic_Search simulator, tick by tick.
+"""Check ais_haptic/policy against the 2D_Haptic_Search simulator, tick by tick.
 
 Run from the simulator repo in the suctionRL env:
   cd ~/projects/2D_Haptic_Search && taskset -c 0-3,5-15,17-31 \
-    ~/miniconda3/envs/suctionRL/bin/python ~/ros2_ws/src/suction_cup/tools/test_policy_parity.py
+    ~/miniconda3/envs/suctionRL/bin/python ~/ros2_ws/src/suction_cup/ais/tools/test_policy_parity.py
 Replays the robot-experiment cases on the as-built polygons (as tools/analyze_robot_plate_layout.py --as-built),
-but every action comes from haptic_policy. At each tick it compares
+but every action comes from ais_haptic.policy. At each tick it compares
   - policies: our observation with the env observation, and our action with limit(model.predict(obs));
   - heuristics: our action (fed yaw + a constant offset) with the ContinuousHeuristic conversion of the script.
-The robot-side integrator (haptic_robot_frame.BodyCommandIntegrator) must track the simulator cup position and yaw.
+The robot-side integrator (robot_frame.BodyCommandIntegrator) must track the simulator cup position and yaw.
 Each episode's success must equal outputs/robot_as_built_sim/episodes.json. Episode length is only reported:
 float32 rounding (~1e-6 per action) can shift a long episode's seal by a tick or two (seen once, PPO 3ch, 480 vs 481).
 """
@@ -19,11 +19,11 @@ from pathlib import Path
 
 import numpy as np
 
-PACKAGE = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PACKAGE / 'src'))
+PACKAGE = Path(__file__).resolve().parents[1]   # ais/
+sys.path.insert(0, str(PACKAGE))
 sys.path.insert(0, str(Path.cwd()))
-from helperFunction import haptic_policy as hp  # noqa: E402
-from helperFunction import haptic_robot_frame as rf  # noqa: E402
+from ais_haptic import policy as hp  # noqa: E402
+from ais_haptic import robot_frame as rf  # noqa: E402
 
 POLICIES = {('ppo', 3): ('ppo_ch3_s2_ch3_s5', 'outputs/v2_s234_20261019/runs/s2_ch3_s5/final.zip'),
             ('ppo', 6): ('ppo_ch6_s2_ch6_s1', 'outputs/v2_s234_20261019/runs/s2_ch6_s1/final.zip'),

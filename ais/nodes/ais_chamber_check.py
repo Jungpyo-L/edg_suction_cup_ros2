@@ -2,16 +2,24 @@
 
 # Authors: Jungpyo Lee
 # Measure which sensor channel is which simulator chamber, and the cup yaw relative to the tool (chamber_map,
-# body_offset_deg in config/haptic_cups.json). Needs the fixture calibration of the same cup.
+# body_offset_deg in ais/config/cups.json). Needs the fixture calibration of the same cup.
 #
-#   ros2 run suction_cup haptic_chamber_check.py --cup ch3 --bore C0 [--write]
+#   ros2 run suction_cup ais_chamber_check.py --cup ch3 --bore C0 [--write]
 #
 # The cup lip reaches overlap_mm past the rim of a calibration bore (centre bore radius + lip radius - overlap_mm
 # from the bore centre along dir_deg in the base-plate frame, default along the block diagonal). All chambers share
 # one supply, so a small overlap gives the clearest per-channel difference (simulator: ~1 mm). It is pressed, read, lifted and turned in yaw steps through a
 # full turn with vacuum on. A channel's vacuum is weakest when its chamber faces the bore centre, whose direction in the
 # robot frame is known from the calibration, so each channel's direction relative to the tool follows without
-# assuming the yaw sign. --write stores the fit in haptic_cups.json (calibrated = true).
+# assuming the yaw sign. --write stores the fit in cups.json (calibrated = true).
+
+import sys
+from pathlib import Path
+
+# With colcon --symlink-install this file runs from ais/nodes/: put ais/ (ais_haptic) and src/ (helperFunction)
+# on the path. A copied install has both next to the script already.
+_NODES = Path(__file__).resolve().parent
+sys.path[:0] = [str(_NODES.parent), str(_NODES.parent.parent / "src")]
 
 import argparse
 import json
@@ -22,9 +30,9 @@ from pathlib import Path
 import numpy as np
 import rclpy
 
-from helperFunction.haptic_robot_frame import (fit_chamber_directions, load_cups, tool_pose, tool_yaw_deg,
+from ais_haptic.robot_frame import (fit_chamber_directions, load_cups, tool_pose, tool_yaw_deg,
                                                wrap_deg)
-from helperFunction.haptic_ros import HapticRosIO
+from ais_haptic.ros_io import HapticRosIO
 from helperFunction.rtde_helper import rtdeHelp
 
 HOVER_MM = 10.0
@@ -154,7 +162,7 @@ def main(args):
 
     if args.write:
         if weak or rms > 10:
-            print("Not writing haptic_cups.json: fix the warnings first.")
+            print("Not writing cups.json: fix the warnings first.")
             return
         data = json.loads(cups_path.read_text())
         data["cups"][cup.name].update(chamber_map=chamber_map, body_offset_deg=round(offset, 2), calibrated=True,
@@ -165,7 +173,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cup", required=True, help="cup name in config/haptic_cups.json (ch3, ch6)")
+    parser.add_argument("--cup", required=True, help="cup name in ais/config/cups.json (ch3, ch6)")
     parser.add_argument("--bore", default="C0")
     parser.add_argument("--dir_deg", type=float, default=45.0, help="straddle direction from the bore centre, base-plate frame")
     parser.add_argument("--overlap_mm", type=float, default=1.0, help="how far the cup lip reaches past the bore rim")
@@ -174,7 +182,7 @@ if __name__ == "__main__":
     parser.add_argument("--step_deg", type=float, default=15.0)
     parser.add_argument("--settle_s", type=float, default=0.5)
     parser.add_argument("--read_s", type=float, default=0.5)
-    parser.add_argument("--write", action="store_true", help="store the fit in haptic_cups.json")
+    parser.add_argument("--write", action="store_true", help="store the fit in cups.json")
     parser.add_argument("--repo", default="~/projects/2D_Haptic_Search")
-    parser.add_argument("--cups", default="~/ros2_ws/src/suction_cup/config/haptic_cups.json")
+    parser.add_argument("--cups", default="~/ros2_ws/src/suction_cup/ais/config/cups.json")
     main(parser.parse_args())

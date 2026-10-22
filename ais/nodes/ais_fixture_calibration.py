@@ -5,12 +5,20 @@
 # ROS2 port of 2D_Haptic_Search/robot/ros/calibrate_fixture.py; the solve, checks and file format stay in
 # 2D_Haptic_Search/tools/fixture_calibration.py (numpy only), imported from --repo.
 #
-#   ros2 run suction_cup haptic_fixture_calibration.py --cup ch3 --repeats 3
+#   ros2 run suction_cup ais_fixture_calibration.py --cup ch3 --repeats 3
 #
 # Vacuum stays off. For each bore, move the cup into it until the lip rests lightly on the bore floor, then press
 # Enter. Moving: keyboard jog in the UR base frame with the tool orientation held fixed (default), or --freedrive
-# (teach mode, by hand). The TCP is set from config/haptic_cups.json, so record with the cup that the trials use.
+# (teach mode, by hand). The TCP is set from ais/config/cups.json, so record with the cup that the trials use.
 # Output: <repo>/robot/calibration/fixture_calibration_<cup>.json (+ time-stamped copy and raw csv).
+
+import sys
+from pathlib import Path
+
+# With colcon --symlink-install this file runs from ais/nodes/: put ais/ (ais_haptic) and src/ (helperFunction)
+# on the path. A copied install has both next to the script already.
+_NODES = Path(__file__).resolve().parent
+sys.path[:0] = [str(_NODES.parent), str(_NODES.parent.parent / "src")]
 
 import argparse
 import csv
@@ -26,7 +34,7 @@ import numpy as np
 import rclpy
 from std_msgs.msg import Int8
 
-from helperFunction.haptic_robot_frame import load_cups, tool_tilt_deg, tool_yaw_deg
+from ais_haptic.robot_frame import load_cups, tool_tilt_deg, tool_yaw_deg
 from helperFunction.rtde_helper import rtdeHelp
 
 JOG_KEYS = {"d": (1, 0, 0), "a": (-1, 0, 0), "w": (0, 1, 0), "s": (0, -1, 0), "r": (0, 0, 1), "f": (0, 0, -1)}
@@ -189,10 +197,10 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cup", required=True, help="cup name in config/haptic_cups.json (ch3, ch6)")
+    parser.add_argument("--cup", required=True, help="cup name in ais/config/cups.json (ch3, ch6)")
     parser.add_argument("--repo", default="~/projects/2D_Haptic_Search")
     # the source tree, not the installed copy: measured cup values are written there without a rebuild
-    parser.add_argument("--cups", default="~/ros2_ws/src/suction_cup/config/haptic_cups.json")
+    parser.add_argument("--cups", default="~/ros2_ws/src/suction_cup/ais/config/cups.json")
     parser.add_argument("--out", default=None)
     parser.add_argument("--bores", default="C0,C1,C2,C3")
     parser.add_argument("--repeats", type=int, default=3, help="insertions per bore (averaged)")

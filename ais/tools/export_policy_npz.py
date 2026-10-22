@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Export the deterministic actor of an SB3 policy to .npz for helperFunction/haptic_policy.MlpPolicy.
+"""Export the deterministic actor of an SB3 policy to .npz for ais_haptic/policy.MlpPolicy.
 
 Run in the suctionRL conda env (torch + SB3), e.g.
-  ~/miniconda3/envs/suctionRL/bin/python tools/export_policy_npz.py --all
+  ~/miniconda3/envs/suctionRL/bin/python ais/tools/export_policy_npz.py --all
 --all exports the three robot-experiment policies listed in ROBOT_POLICIES (paths in 2D_Haptic_Search/outputs).
 """
 import argparse
@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 REPO = Path('~/projects/2D_Haptic_Search').expanduser()
-PACKAGE = Path(__file__).resolve().parents[1]
+PACKAGE = Path(__file__).resolve().parents[1]   # ais/
 ROBOT_POLICIES = {
     'ppo_ch3_s2_ch3_s5': ('ppo', 'outputs/v2_s234_20261019/runs/s2_ch3_s5/final.zip'),
     'ppo_ch6_s2_ch6_s1': ('ppo', 'outputs/v2_s234_20261019/runs/s2_ch6_s1/final.zip'),

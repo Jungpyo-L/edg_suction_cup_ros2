@@ -12,7 +12,7 @@ from std_msgs.msg import Int8
 
 from suction_cup.msg import SensorPacket
 
-from .SuctionP_callback_helper import P_CallbackHelp
+from helperFunction.SuctionP_callback_helper import P_CallbackHelp
 
 VACUUM_ON, VACUUM_OFF = 100, 0
 SYNC_RESET, SYNC_START, SYNC_STOP = 0, 1, 2

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Unit checks for helperFunction/haptic_robot_frame.py (system Python, no robot, no simulator).
+"""Unit checks for ais_haptic/robot_frame.py (system Python, no robot, no simulator).
 
-  python3 tools/test_robot_frame.py
-The integrator is also checked against the simulator in tools/test_policy_parity.py.
+  python3 ais/tools/test_robot_frame.py
+The integrator is also checked against the simulator in ais/tools/test_policy_parity.py.
 """
 import sys
 from pathlib import Path
@@ -10,8 +10,8 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from helperFunction import haptic_robot_frame as rf  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # ais/: ais_haptic
+from ais_haptic import robot_frame as rf  # noqa: E402
 
 rng = np.random.default_rng(0)
 ok = True

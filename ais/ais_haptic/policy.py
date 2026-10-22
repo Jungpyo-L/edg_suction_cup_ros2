@@ -57,7 +57,7 @@ def rotation(yaw_deg):
 
 
 class MlpPolicy:
-    """Deterministic actor exported from SB3 by tools/export_policy_npz.py.
+    """Deterministic actor exported from SB3 by ais/tools/export_policy_npz.py.
 
     PPO (gSDE, no squash): action_net(latent), clipped to the action box by predict().
     SAC: tanh(mu(latent)); the action box is [-1, 1] so unscaling is the identity.

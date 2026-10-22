@@ -23,10 +23,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   src/ESP32_PWM.py
   src/ESP32_Pressure.py
   src/ft_monitor.py
-  src/haptic_chamber_check.py
-  src/haptic_fixture_calibration.py
-  src/haptic_pressure_check.py
-  src/haptic_trial_runner.py
   src/realsense_sphere_detector.py
   src/robotStatePublisher.py
   src/sphere_sweep_experiment.py
@@ -47,6 +43,20 @@ install(DIRECTORY
 
 install(DIRECTORY
   src/helperFunction
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# AIS haptic-search robot demo (ais/README.md): nodes run as `ros2 run suction_cup ais_<name>.py`
+install(PROGRAMS
+  ais/nodes/ais_chamber_check.py
+  ais/nodes/ais_fixture_calibration.py
+  ais/nodes/ais_pressure_check.py
+  ais/nodes/ais_trial_runner.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+  ais/ais_haptic
   DESTINATION lib/${PROJECT_NAME}
 )
 

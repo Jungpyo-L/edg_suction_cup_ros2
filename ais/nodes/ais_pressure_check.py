@@ -4,8 +4,16 @@
 # Measure the pressure stream that the haptic-search controllers will see, and compare it with the simulator's
 # sensor model (144 Hz raw samples, sigma 6 Pa, 7-point moving average). No robot motion; run with the cup in air,
 # vacuum on or off (--note says which), while ESP32_Pressure.py is running:
-#   ros2 run suction_cup haptic_pressure_check.py --seconds 20 --ch 3 --note "air, vacuum on"
+#   ros2 run suction_cup ais_pressure_check.py --seconds 20 --ch 3 --note "air, vacuum on"
 # Saves the raw samples to ~/EDG_Experiment/<yymmdd>/pressure_check_<time>.npz.
+
+import sys
+from pathlib import Path
+
+# With colcon --symlink-install this file runs from ais/nodes/: put ais/ (ais_haptic) and src/ (helperFunction)
+# on the path. A copied install has both next to the script already.
+_NODES = Path(__file__).resolve().parent
+sys.path[:0] = [str(_NODES.parent), str(_NODES.parent.parent / "src")]
 
 import argparse
 import time

@@ -3,17 +3,25 @@
 # Authors: Jungpyo Lee
 # Run haptic-search trials from 2D_Haptic_Search/robot/fixture_final_subset_K10/trial_schedule.csv on the UR10.
 #
-#   ros2 run suction_cup haptic_trial_runner.py --cup ch3 --dry-run            # plan only: no ROS, no robot
-#   ros2 run suction_cup haptic_trial_runner.py --cup ch3 --trials 0-5 --step  # pilot, Enter before each trial
-#   ros2 run suction_cup haptic_trial_runner.py --cup ch3                      # the whole 3-chamber block, resumable
+#   ros2 run suction_cup ais_trial_runner.py --cup ch3 --dry-run            # plan only: no ROS, no robot
+#   ros2 run suction_cup ais_trial_runner.py --cup ch3 --trials 0-5 --step  # pilot, Enter before each trial
+#   ros2 run suction_cup ais_trial_runner.py --cup ch3                      # the whole 3-chamber block, resumable
 #
 # Per trial: hover above the start (tool yaw from the simulator start yaw) -> zero sensors in air -> descend to the
 # contact height minus press_mm -> vacuum on, settle -> 50 Hz loop (controller -> servoL) until every chamber reaches
 # seal_frac * P_max (then hold 1 s), 10 s, the 30 mm object boundary, or a tracking fault -> vacuum off -> lift.
-# Matches the simulator: 10 mm/s, 10 deg/s, body-frame actions (helperFunction/haptic_policy, haptic_robot_frame).
+# Matches the simulator: 10 mm/s, 10 deg/s, body-frame actions (ais_haptic.policy, ais_haptic.robot_frame).
 # Each trial is saved as <results>/trial_XXXX.npz (per tick + raw sensor stream) and .json (summary); trials with a
 # .json are skipped, so rerunning the same command resumes. Ctrl+C stops safely; that trial is saved as aborted and
 # rerun next time.
+
+import sys
+from pathlib import Path
+
+# With colcon --symlink-install this file runs from ais/nodes/: put ais/ (ais_haptic) and src/ (helperFunction)
+# on the path. A copied install has both next to the script already.
+_NODES = Path(__file__).resolve().parent
+sys.path[:0] = [str(_NODES.parent), str(_NODES.parent.parent / "src")]
 
 import argparse
 import csv
@@ -26,8 +34,8 @@ from pathlib import Path
 
 import numpy as np
 
-from helperFunction.haptic_policy import CONTROL_HZ, DURATION_S, P_MAX_PA, make_controller
-from helperFunction.haptic_robot_frame import (BodyCommandIntegrator, load_cups, tool_pose, tool_tilt_deg,
+from ais_haptic.policy import CONTROL_HZ, DURATION_S, P_MAX_PA, make_controller
+from ais_haptic.robot_frame import (BodyCommandIntegrator, load_cups, tool_pose, tool_tilt_deg,
                                                tool_yaw_deg, wrap_deg)
 
 HOVER_MM = 10.0
@@ -66,6 +74,8 @@ class Plan:
         self.xy, self.z_top, self.theta = np.asarray(xyz[:2]), float(xyz[2]), float(theta)
         self.psi = cup.psi_for_body_yaw(self.theta)
         self.origin_xy = cal.object_pose(row['object'])[0][:2]   # object-frame origin, robot frame (m)
+        self.frame = dict(object_origin_robot_m=self.origin_xy.tolist(), calibration_rotation_deg=float(cal.theta),
+                          body_offset_deg=cup.body_offset_deg, chamber_map=cup.chamber_map, chambers=cup.chambers)
 
     def object_distance_mm(self, xy_m):
         return float(np.linalg.norm(np.asarray(xy_m) - self.origin_xy) * 1000.)
@@ -197,12 +207,23 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
                    end_object_distance_mm=plan.object_distance_mm(end_pose[:2]),
                    hold_min_vacuum_pa=(np.min(hold, axis=0).tolist() if hold else None),
                    start=dict(x_m=plan.xy[0], y_m=plan.xy[1], z_top_m=plan.z_top, body_yaw_deg=plan.theta, tool_yaw_deg=plan.psi),
+                   frame=plan.frame,
                    raw_rate_hz=float((len(raw_t) - 1) / (raw_t[-1] - raw_t[0])) if len(raw_t) > 1 else None)
     arrays = {k: np.array(v) for k, v in log.items() if k != 'obs'}
     arrays['obs'] = np.array(log['obs']) if log['obs'] and len(log['obs'][0]) else np.zeros((0,))
     arrays.update(hold_vacuum_pa=np.array(hold), raw_receive_s=raw_t - t0 if len(raw_t) else raw_t,
                   raw_stamp_s=raw_stamp, raw_pa=raw_pa)
     return summary, arrays
+
+
+def save_trial(results, row, summary, arrays, args, policy_path):
+    """<results>/trial_XXXX.npz (per tick, raw stream) and .json (summary); the .json marks the trial as done."""
+    summary.update(row=row, controller=row['controller'], policy=row['policy'],
+                   policy_file=str(policy_path) if policy_path else None,
+                   seal_frac=args.seal_frac, pmax_kpa=args.pmax_kpa, press_mm=args.press_mm,
+                   finished=datetime.now().isoformat(timespec='seconds'))
+    np.savez_compressed(results / ('trial_%04d.npz' % int(row['trial'])), **arrays)
+    (results / ('trial_%04d.json' % int(row['trial']))).write_text(json.dumps(summary, indent=1, default=float))
 
 
 def main(args):
@@ -219,7 +240,7 @@ def main(args):
         raise SystemExit('No schedule rows match --cup/--trials/--controllers.')
     if args.dry_run:
         if not cal_path.exists():
-            raise SystemExit('No calibration at %s. Run haptic_fixture_calibration.py first.' % cal_path)
+            raise SystemExit('No calibration at %s. Run ais_fixture_calibration.py first.' % cal_path)
         return dry_run(args, cup, load_calibration(cal_path), rows, policy_dir)
     cup.require_calibrated()
     cal = load_calibration(cal_path)
@@ -237,7 +258,7 @@ def main(args):
     (results / ('session_%s.json' % datetime.now().strftime('%Y%m%d_%H%M%S'))).write_text(json.dumps(session, indent=1, default=str))
 
     import rclpy
-    from helperFunction.haptic_ros import HapticRosIO
+    from ais_haptic.ros_io import HapticRosIO
     from helperFunction.rtde_helper import rtdeHelp
 
     rclpy.init()
@@ -262,12 +283,7 @@ def main(args):
             if args.step:
                 input('  Enter to run (Ctrl+C to stop) ')
             summary, arrays = run_trial(args, cup, plan, rtde, io, ctrl)
-            summary.update(row=row, controller=row['controller'], policy=row['policy'],
-                           policy_file=str(policy_path) if policy_path else None,
-                           seal_frac=args.seal_frac, pmax_kpa=args.pmax_kpa, press_mm=args.press_mm,
-                           finished=datetime.now().isoformat(timespec='seconds'))
-            np.savez_compressed(results / ('trial_%04d.npz' % int(row['trial'])), **arrays)
-            (results / ('trial_%04d.json' % int(row['trial']))).write_text(json.dumps(summary, indent=1, default=float))
+            save_trial(results, row, summary, arrays, args, policy_path)
             print('  -> %s in %.2f s, path %.1f mm (cmd), %.1f mm from the object origin at the end' % (
                 summary['reason'], summary['time_s'], summary['path_cmd_mm'], summary['end_object_distance_mm']))
     except KeyboardInterrupt:
@@ -293,7 +309,7 @@ def main(args):
 if __name__ == '__main__':
     repo = '~/projects/2D_Haptic_Search'
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cup', required=True, help='cup in config/haptic_cups.json (ch3, ch6); selects that block')
+    parser.add_argument('--cup', required=True, help='cup in ais/config/cups.json (ch3, ch6); selects that block')
     parser.add_argument('--trials', default=None, help='trial numbers, e.g. 0-5,12')
     parser.add_argument('--controllers', default=None, help='comma list, e.g. ppo,yaw_momentum')
     parser.add_argument('--dry-run', action='store_true', help='plan only: print start poses, load controllers; no ROS/robot')
@@ -308,6 +324,6 @@ if __name__ == '__main__':
     parser.add_argument('--calibration', default=None, help='default <repo>/robot/calibration/fixture_calibration_<cup>.json')
     parser.add_argument('--results', default='~/EDG_Experiment/ais_robot_demo')
     parser.add_argument('--repo', default=repo)
-    parser.add_argument('--cups', default='~/ros2_ws/src/suction_cup/config/haptic_cups.json')
-    parser.add_argument('--policies', default='~/ros2_ws/src/suction_cup/policies')
+    parser.add_argument('--cups', default='~/ros2_ws/src/suction_cup/ais/config/cups.json')
+    parser.add_argument('--policies', default='~/ros2_ws/src/suction_cup/ais/policies')
     main(parser.parse_args())
