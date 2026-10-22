@@ -1,0 +1,7 @@
+{
+ "note": "Cups for the AIS haptic-search robot demo (helperFunction/haptic_robot_frame.py). tcp_offset: UR set_tcp [m, rad], cup lip on the cup axis. chamber_map[i] = sensor channel of simulator chamber i; body_offset_deg = simulator body yaw minus tool yaw (seen from above). Both are measured with haptic_chamber_check.py; until then calibrated=false and only --dry-run works. Old ROS1 hints (not trusted): 3ch pressure order [1, 2, 0]; yaw = -tool_yaw - 90 deg.",
+ "cups": {
+  "ch3": {"chambers": 3, "tcp_offset": [0.0, 0.0, 0.150, 0.0, 0.0, 0.0], "chamber_map": null, "body_offset_deg": null, "calibrated": false},
+  "ch6": {"chambers": 6, "tcp_offset": [0.0, 0.0, 0.1692, 0.0, 0.0, 0.0], "chamber_map": null, "body_offset_deg": null, "calibrated": false}
+ }
+}
