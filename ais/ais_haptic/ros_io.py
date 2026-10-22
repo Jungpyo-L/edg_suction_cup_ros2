@@ -11,6 +11,7 @@ from rclpy.executors import SingleThreadedExecutor
 from std_msgs.msg import Int8
 
 from suction_cup.msg import SensorPacket
+from suction_cup.srv import Enable
 
 from helperFunction.SuctionP_callback_helper import P_CallbackHelp
 
@@ -27,6 +28,7 @@ class HapticRosIO:
         self.raw_lock = threading.Lock()
         self.raw = None          # list of (receive time, header stamp, values) while recording
         node.create_subscription(SensorPacket, "SensorPacket", self._raw_callback, 100)
+        self.datalog_client = node.create_client(Enable, "data_logging")
         self.executor = SingleThreadedExecutor()
         self.executor.add_node(node)
         self._stop = False
@@ -54,6 +56,27 @@ class HapticRosIO:
             return np.zeros(0), np.zeros(0), np.zeros((0, self.chambers))
         t, s, v = zip(*raw)
         return np.array(t), np.array(s), np.array(v, dtype=float)
+
+    def wait_for_datalogger(self, timeout_s=10.0):
+        if not self.datalog_client.wait_for_service(timeout_sec=timeout_s):
+            raise RuntimeError("No data_logging service. Start data_logger.py (and robotStatePublisher.py for "
+                               "/endEffectorPose), or pass --no-datalog.")
+
+    def datalog(self, enabled, timeout_s=15.0):
+        """Toggle data_logger.py. Like ros2_helpers.call_enable_service, but the reply is handled by the background
+        executor that already spins this node (spinning it a second time here is not allowed)."""
+        request = Enable.Request()
+        request.enable_data_logging = bool(enabled)
+        future = self.datalog_client.call_async(request)
+        t_end = time.monotonic() + timeout_s
+        while not future.done():
+            if time.monotonic() > t_end:
+                future.cancel()
+                raise RuntimeError("data_logging did not answer within %.0f s; is data_logger.py running?" % timeout_s)
+            time.sleep(0.01)
+        if future.exception() is not None:
+            raise future.exception()
+        return future.result()
 
     def vacuum(self, on):
         self.pwm_pub.publish(Int8(data=VACUUM_ON if on else VACUUM_OFF))

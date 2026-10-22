@@ -62,9 +62,18 @@ Repeat 3-7 with `--cup ch6` after swapping the cup (calibration and chamber chec
 Files: `ais_haptic/robot_frame.py` (frames, cup config, chamber fit, servoL target integrator),
 `ais_haptic/ros_io.py` (pressure / vacuum / sync on a background-spun node, raw-stream recording),
 `ais/config/cups.json` (TCP, lip radius, chamber map; `calibrated: false` until step 4).
-Results: `~/EDG_Experiment/ais_robot_demo/trial_XXXX.{json,npz}` (per tick: sensor, simulator-order vacuum, action,
-servoL target, actual TCP pose, body yaw, policy observation; raw sensor stream; 1 s hold after a seal) and
-`session_*.json` (hashes of calibration, cup config, schedule, policies).
+Results in `~/EDG_Experiment/ais_robot_demo/`:
+
+| File | Contents |
+|---|---|
+| `results.csv` | one row per trial: `label` (e.g. `ch3_obj01_pose1_ppo`), cup, controller, policy, object number and id, start pose index 0-9, success, reason, time, path, loop rate, .mat path |
+| `trial_XXXX.json` | summary: the above plus start pose (robot and object frame), wrist 3, settings |
+| `trial_XXXX.npz` | per 50 Hz tick: sensor, simulator-order vacuum, policy observation, action, servoL target, actual TCP pose, body yaw; 144 Hz raw sensor stream; 1 s hold after a seal |
+| `datalog/<yymmdd>/DataLog_<time>_AIS_<label>_trialXXXX_<success or fail_reason>.mat` | data_logger.py topics (`/SensorPacket`, `/SensorCallback`, `/endEffectorPose`, `/sync`, `/netft_data`) as before, plus the trial identity and outcome as variables (`label`, `success`, `start_index`, `object_no`, ...) |
+| `session_*.json` | hashes of calibration, cup config, schedule, policies |
+
+The .mat is on by default: start `data_logger.py` (and `robotStatePublisher.py`, netft) before the runner, or pass
+`--no-datalog`. A logger failure only skips that trial's .mat; the .npz is always written.
 
 Frames: everything is done in the UR `base` frame seen from above. Tool yaw psi is the tool x-axis on the table;
 body yaw = psi + body_offset_deg; rotating about base +z adds to both, so no yaw-sign guess is needed. The chamber check

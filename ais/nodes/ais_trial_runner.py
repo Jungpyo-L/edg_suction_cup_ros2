@@ -12,8 +12,10 @@
 # contact height minus press_mm -> vacuum on, settle -> 50 Hz loop (controller -> servoL) until every chamber reaches
 # seal_frac * P_max (then hold 1 s), 10 s, the 30 mm object boundary, or a tracking fault -> vacuum off -> lift.
 # Matches the simulator: 10 mm/s, 10 deg/s, body-frame actions (ais_haptic.policy, ais_haptic.robot_frame).
-# Each trial is saved as <results>/trial_XXXX.npz (per tick + raw sensor stream) and .json (summary); trials with a
-# .json are skipped, so rerunning the same command resumes. Ctrl+C stops safely; that trial is saved as aborted and
+# Each trial is saved as <results>/trial_XXXX.npz (per tick + raw sensor stream) and .json (summary), one row of
+# <results>/results.csv (cup, object, start pose, controller, success...), and, by default, a data_logger .mat
+# (/SensorPacket, /endEffectorPose, /netft_data, /sync, plus the same trial info) in <results>/datalog/<yymmdd>/.
+# Trials with a .json are skipped, so rerunning the same command resumes. Ctrl+C stops safely; that trial is saved as aborted and
 # rerun next time.
 
 import sys
@@ -27,6 +29,7 @@ sys.path[:0] = [str(_NODES.parent), str(_NODES.parent.parent / "src")]
 import argparse
 import csv
 import hashlib
+import os
 import json
 import sys
 import time
@@ -149,6 +152,8 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
     rtde.rtde_c.moveL(hover, MOVE_SPEED, MOVE_ACC)
     time.sleep(0.3)
     io.zero_in_air()
+    if getattr(args, 'datalog', False):
+        io.datalog(True)
     rtde.rtde_c.moveL(touch, MOVE_SPEED / 2, MOVE_ACC)
     rtde.rtde_c.moveL(contact, TOUCH_SPEED, TOUCH_ACC)
     ctrl.reset()
@@ -219,6 +224,8 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
     lift = list(end_pose)
     lift[2] = plan.z_top + HOVER_MM / 1000.0
     rtde.rtde_c.moveL(lift, MOVE_SPEED / 2, MOVE_ACC)
+    if getattr(args, 'datalog', False):
+        io.datalog(False)
 
     actual = np.array(log['actual']) if log['actual'] else np.zeros((0, 6))
     path_actual = float(np.sum(np.linalg.norm(np.diff(actual[:, :2], axis=0), axis=1)) * 1000) if len(actual) > 1 else 0.
@@ -240,14 +247,49 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
     return summary, arrays
 
 
+RESULT_COLUMNS = ['trial', 'label', 'chambers', 'controller', 'policy', 'object_no', 'object', 'start_index', 'success',
+                  'reason', 'time_s', 'path_cmd_mm', 'path_actual_mm', 'end_object_distance_mm', 'loop_hz',
+                  'datalog_mat', 'finished']
+
+
+def trial_info(row):
+    """Readable identity of a schedule row: cup, object number, start pose number (0-9 per object), controller."""
+    start = int(row['case_id'].split(':')[-1])
+    label = 'ch%s_obj%02d_pose%d_%s' % (row['chambers'], int(row['object_no']), start, row['controller'])
+    return dict(label=label, chambers=int(row['chambers']), object_no=int(row['object_no']), object=row['object'],
+                start_index=start, controller=row['controller'], policy=row['policy'])
+
+
 def save_trial(results, row, summary, arrays, args, policy_path):
-    """<results>/trial_XXXX.npz (per tick, raw stream) and .json (summary); the .json marks the trial as done."""
-    summary.update(row=row, controller=row['controller'], policy=row['policy'],
-                   policy_file=str(policy_path) if policy_path else None,
+    """<results>/trial_XXXX.npz (per tick, raw stream) and .json (summary), plus a row of <results>/results.csv.
+    The .json marks the trial as done."""
+    summary.update(trial_info(row), row=row, policy_file=str(policy_path) if policy_path else None,
                    seal_frac=args.seal_frac, pmax_kpa=args.pmax_kpa, press_mm=args.press_mm,
                    finished=datetime.now().isoformat(timespec='seconds'))
+    summary.setdefault('datalog_mat', None)
     np.savez_compressed(results / ('trial_%04d.npz' % int(row['trial'])), **arrays)
     (results / ('trial_%04d.json' % int(row['trial']))).write_text(json.dumps(summary, indent=1, default=float))
+    table = results / 'results.csv'
+    new = not table.exists()
+    with open(table, 'a', newline='') as fh:
+        w = csv.DictWriter(fh, fieldnames=RESULT_COLUMNS, extrasaction='ignore')
+        if new:
+            w.writeheader()
+        w.writerow({k: (round(v, 3) if isinstance(v, float) else v) for k, v in summary.items() if k in RESULT_COLUMNS})
+
+
+def save_datalog(file_help, row, summary, cup):
+    """data_logger CSVs -> .mat (fileSaveHelp.saveDataParams), with the trial identity and outcome as variables."""
+    info = trial_info(row)
+    meta = argparse.Namespace(**info, trial=int(row['trial']), case_id=row['case_id'],
+                              start_x_object_mm=float(row['start_x_object']), start_y_object_mm=float(row['start_y_object']),
+                              start_yaw_deg=float(row['start_yaw_deg']), success=int(summary['reason'] == 'sealed'),
+                              reason=summary['reason'], time_s=summary['time_s'], path_cmd_mm=summary['path_cmd_mm'],
+                              cup=cup.name, chamber_map=list(cup.chamber_map), body_offset_deg=cup.body_offset_deg,
+                              trial_npz='trial_%04d.npz' % int(row['trial']))
+    outcome = 'success' if summary['reason'] == 'sealed' else 'fail_' + summary['reason']
+    folder, name = file_help.saveDataParams(meta, appendTxt='AIS_%s_trial%04d_%s' % (info['label'], int(row['trial']), outcome))
+    return str(Path(folder) / ('%s_AIS_%s_trial%04d_%s.mat' % (name, info['label'], int(row['trial']), outcome)))
 
 
 def main(args):
@@ -295,6 +337,14 @@ def main(args):
         rtde.setTCPoffset(cup.tcp_offset)
         time.sleep(0.2)
         io.wait_for_pressure()
+        file_help = None
+        if args.datalog:
+            from helperFunction.fileSaveHelper import fileSaveHelp
+            io.wait_for_datalogger()
+            io.datalog(False)
+            datalog_dir = results / 'datalog'
+            file_help = fileSaveHelp(os.path.relpath(datalog_dir, Path.home()))
+            print('data_logger .mat files -> %s' % file_help.ResultSavingDirectory)
         pose = list(rtde.rtde_r.getActualTCPPose())
         if tool_tilt_deg(pose) > 1.0:
             raise RuntimeError('Tool is not pointing down (tilt %.2f deg)' % tool_tilt_deg(pose))
@@ -306,14 +356,27 @@ def main(args):
                 float(row['start_x_object']), float(row['start_y_object']), float(row['start_yaw_deg'])))
             if args.step:
                 input('  Enter to run (Ctrl+C to stop) ')
+            if file_help is not None:
+                file_help.clearTmpFolder()
             summary, arrays = run_trial(args, cup, plan, rtde, io, ctrl)
+            if file_help is not None:
+                try:
+                    summary['datalog_mat'] = save_datalog(file_help, row, summary, cup)
+                except Exception as exc:     # the trial itself is in the .npz; do not lose it to a logger problem
+                    print('  WARNING: no data_logger .mat for this trial (%s)' % exc)
             save_trial(results, row, summary, arrays, args, policy_path)
-            print('  -> %s in %.2f s, path %.1f mm (cmd), %.1f mm from the object origin at the end' % (
-                summary['reason'], summary['time_s'], summary['path_cmd_mm'], summary['end_object_distance_mm']))
+            print('  -> %s: %s in %.2f s, path %.1f mm (cmd), %.1f mm from the object origin at the end' % (
+                summary['label'], 'SUCCESS' if summary['success'] else 'FAIL (%s)' % summary['reason'],
+                summary['time_s'], summary['path_cmd_mm'], summary['end_object_distance_mm']))
     except KeyboardInterrupt:
         print('\nStopped by the user. The interrupted trial is not saved and will run again next time.')
     finally:
         io.vacuum(False)
+        if args.datalog:
+            try:
+                io.datalog(False)
+            except Exception as exc:
+                print('Could not stop data_logger: %s' % exc)
         if rtde is not None:
             try:
                 rtde.rtde_c.servoStop()
@@ -344,6 +407,8 @@ if __name__ == '__main__':
     parser.add_argument('--pmax_kpa', type=float, default=P_MAX_PA / 1000, help='sealed vacuum measured this session')
     parser.add_argument('--lookahead', type=float, default=0.1, help='servoL lookahead time (s), 0.03-0.2')
     parser.add_argument('--gain', type=float, default=300.0, help='servoL gain, 100-2000')
+    parser.add_argument('--datalog', action=argparse.BooleanOptionalAction, default=True,
+                        help='also record data_logger.py topics to a .mat per trial (default on; --no-datalog to skip)')
     parser.add_argument('--q6_home_deg', type=float, default=0.0, help='wrist 3 is unwound to within 180 deg of this before each trial')
     parser.add_argument('--schedule', default=repo + '/robot/fixture_final_subset_K10/trial_schedule.csv')
     parser.add_argument('--calibration', default=None, help='default <repo>/robot/calibration/fixture_calibration_<cup>.json')
