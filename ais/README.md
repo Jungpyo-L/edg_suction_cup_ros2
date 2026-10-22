@@ -78,6 +78,14 @@ measures each channel's direction against a known bore, so the old ROS1 hints ([
   cup offset and fixture rotation. Geometric seal tick equals the stored simulation in 598/600 trials; the 2 others are
   PPO 3ch episodes > 370 ticks that also diverge from float32 round-off alone.
 
+### Loop timing
+
+The runner keeps its own 50 Hz clock. `rtde_c.waitPeriod()` waits one RTDE period (1/125 s with `rtdeHelp(125)`), so
+the first version would have run the loop at 125 Hz while each servoL target advanced 1/50 s of motion: 2.5x the
+simulator speed and a 4 s time limit. Fixed before any robot run; `tools/test_loop_timing.py` (real time, ~11 s)
+checks 500 ticks in 10 s and 100 deg of turn. Each trial logs `loop_hz` and `loop_overruns`. The UR still servos at its
+own 125 Hz between our 50 Hz targets (servoL time = 0.02 s, lookahead smoothing).
+
 ### Wrist 3 wind-up
 
 The yaw controllers turn the tool the same way every trial, and a moveL to the next start takes the shortest rotation

@@ -159,11 +159,11 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
 
     log = {k: [] for k in ('t', 'sensor_pa', 'vacuum_sim_pa', 'action', 'target', 'actual', 'theta_cmd', 'obs')}
     reason, t0, seal_tick = 'timeout', time.monotonic(), None
+    next_tick, overruns = time.monotonic(), 0
     q6_range = [q6_start, q6_start]
     io.sync(1)
     try:
         for tick in range(int(round(DURATION_S * CONTROL_HZ))):
-            t_start = rtde.rtde_c.initPeriod()
             sensor = io.pressure()
             vac = cup.sim_vacuum(sensor)
             actual = list(rtde.rtde_r.getActualTCPPose())
@@ -194,7 +194,14 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
             log['theta_cmd'].append(integ.theta)
             log['obs'].append(getattr(ctrl, 'last_obs', None) if getattr(ctrl, 'last_obs', None) is not None
                               else np.zeros(0))
-            rtde.rtde_c.waitPeriod(t_start)
+            # Our own 50 Hz clock: rtde_c.waitPeriod() waits one RTDE period (1/125 s), which would run this loop
+            # at 125 Hz while each target advances 1/50 s of motion, i.e. 2.5x the simulator speed.
+            next_tick += dt
+            slack = next_tick - time.monotonic()
+            if slack > 0:
+                time.sleep(slack)
+            else:
+                overruns += 1
     finally:
         rtde.rtde_c.servoStop()
         elapsed = time.monotonic() - t0
@@ -223,7 +230,9 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
                    start=dict(x_m=plan.xy[0], y_m=plan.xy[1], z_top_m=plan.z_top, body_yaw_deg=plan.theta, tool_yaw_deg=plan.psi),
                    frame=plan.frame,
                    wrist3_deg=dict(before_unwind=q6_before, start=q6_start, min=q6_range[0], max=q6_range[1]),
-                   raw_rate_hz=float((len(raw_t) - 1) / (raw_t[-1] - raw_t[0])) if len(raw_t) > 1 else None)
+                   raw_rate_hz=float((len(raw_t) - 1) / (raw_t[-1] - raw_t[0])) if len(raw_t) > 1 else None,
+                   loop_hz=float((len(log['t']) - 1) / (log['t'][-1] - log['t'][0])) if len(log['t']) > 1 else None,
+                   loop_overruns=overruns)
     arrays = {k: np.array(v) for k, v in log.items() if k != 'obs'}
     arrays['obs'] = np.array(log['obs']) if log['obs'] and len(log['obs'][0]) else np.zeros((0,))
     arrays.update(hold_vacuum_pa=np.array(hold), raw_receive_s=raw_t - t0 if len(raw_t) else raw_t,
