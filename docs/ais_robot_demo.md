@@ -28,9 +28,52 @@ As-built simulation of the same 100 starts: PPO 94/94 %, yaw–momentum 82/78 %,
   Success matches `outputs/robot_as_built_sim/episodes.json` for all 600 stored episodes; one PPO 3ch episode seals one tick later (481 vs 480) from float32 rounding.
 - Cost: about 60 µs per tick in system Python.
 
+## Steps 2-5: robot-side tools (written 2026-10-21, not yet run on the robot)
+
+All new nodes are in `CMakeLists.txt`; `colcon build --packages-select suction_cup`, then `ros2 run suction_cup <node>`.
+Run order on the robot day:
+
+| # | Command | What it does |
+|---|---|---|
+| 1 | `ESP32_Pressure.py --ch 3` | now drains every serial line per 10 ms tick (it used to read one, capping the stream at 100 Hz and letting a faster stream lag) |
+| 2 | `haptic_pressure_check.py --ch 3 --note "air, vacuum off"` | receive rate, jitter, per-channel noise vs the simulator sensor model (144 Hz, sigma 6 Pa, 7-point MA) |
+| 3 | `haptic_fixture_calibration.py --cup ch3 --repeats 3` | vacuum off; keyboard jog (or `--freedrive`) into C0..C3, predicts the remaining bores after two; saves `2D_Haptic_Search/robot/calibration/fixture_calibration_ch3.json` |
+| 4 | `haptic_chamber_check.py --cup ch3 --bore C0 --write` | cup lip ~1 mm over a bore rim, full yaw scan; fits `chamber_map` and `body_offset_deg` in `config/haptic_cups.json` |
+| 5 | `haptic_trial_runner.py --cup ch3 --dry-run` | plan only (no ROS): start poses, controllers load |
+| 6 | `haptic_trial_runner.py --cup ch3 --trials 0-5 --step` | pilot trials, Enter before each |
+| 7 | `haptic_trial_runner.py --cup ch3` | the 300-trial block; rerun the same command to resume |
+
+Repeat 3-7 with `--cup ch6` after swapping the cup (calibration and chamber check are per cup: TCP length differs).
+
+Files: `helperFunction/haptic_robot_frame.py` (frames, cup config, chamber fit, servoL target integrator),
+`helperFunction/haptic_ros.py` (pressure / vacuum / sync on a background-spun node, raw-stream recording),
+`config/haptic_cups.json` (TCP, lip radius, chamber map; `calibrated: false` until step 4).
+Results: `~/EDG_Experiment/ais_robot_demo/trial_XXXX.{json,npz}` (per tick: sensor, simulator-order vacuum, action,
+servoL target, actual TCP pose, body yaw, policy observation; raw sensor stream; 1 s hold after a seal) and
+`session_*.json` (hashes of calibration, cup config, schedule, policies).
+
+Frames: everything is done in the UR `base` frame seen from above. Tool yaw psi is the tool x-axis on the table;
+body yaw = psi + body_offset_deg; rotating about base +z adds to both, so no yaw-sign guess is needed. The chamber check
+measures each channel's direction against a known bore, so the old ROS1 hints ([1, 2, 0], -yaw - 90) are not used.
+
+### Verification (no robot)
+
+- `tools/test_robot_frame.py` (system Python): pose conventions, chamber fit for any wiring, integrator. All pass.
+- `tools/test_chamber_check.py` (suctionRL, simulator pressure model): bore-rim scans with random wiring/offset; directions recovered within 0.2 deg.
+- `tools/test_runner_loop.py` (suctionRL): `run_trial` with the UR and sensor replaced by the simulator, random wiring,
+  cup offset and fixture rotation. Geometric seal tick equals the stored simulation in 598/600 trials; the 2 others are
+  PPO 3ch episodes > 370 ticks that also diverge from float32 round-off alone.
+
+### Finding: the success criterion differs from the simulator's
+
+The runner stops when every chamber reaches `seal_frac` x P_max (default 0.8); the simulator counts a seal when the open
+mouth area is < 1e-3 mm^2. Replaying the robot cases (test_runner_loop.py, 0.8): usually the stop is 0-1 tick after the
+geometric seal (sensor lag), but a nearly closed cup can pass 0.8 P_max long before it seals (up to 336 ticks early),
+and 6ch yaw-momentum gains 4/100 successes (82 vs 78 %). For sim-vs-robot comparison the simulation reference should use
+the same pressure criterion; the per-tick logs allow any threshold 0.6-0.9 afterwards (see ROBOT_EXPERIMENT_PLAN.md §5).
+
 ## Still to do
 
-2. Measure the pressure sample rate; map physical chambers to simulator order and check the yaw sign (cup is upside down).
-3. Body-frame action → tool-frame servoL target (mapping set by step 2).
-4. Calibration recording node (port `robot/ros/calibrate_fixture.py` to ROS2).
-5. Single-trial node, then the `trial_schedule.csv` scheduler.
+- Robot day: steps 1-7 above, plus Phase 0 checks (sliding distortion, latency) from ROBOT_EXPERIMENT_PLAN.md §6.
+- Decide: success threshold (`--seal_frac`), press depth (`--press_mm`, simulator 5 mm), servoL lookahead/gain (tracking is logged).
+- Simulation reference with the pressure criterion for the sim-vs-robot comparison.

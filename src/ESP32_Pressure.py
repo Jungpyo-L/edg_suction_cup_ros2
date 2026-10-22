@@ -19,6 +19,8 @@ IDLE_CMD = 3
 
 
 class ESP32PressureNode(Node):
+    MAX_LINES_PER_TICK = 50
+
     def __init__(self, expected_channels=None, auto_start=True):
         super().__init__("ESP32_Pressure")
         self.expected_channels = expected_channels
@@ -111,18 +113,22 @@ class ESP32PressureNode(Node):
             if not self.streaming:
                 return
 
-            ser_bytes = self.ser.readline().decode("utf-8", errors="ignore")
-            if not ser_bytes.strip():
-                return
-
-            values = self._parse_pressure_line(ser_bytes)
-            if values is None:
-                return
-
-            self.msg.ch = self.num_channels
-            self.msg.data = values
-            self.msg.header.stamp = self.get_clock().now().to_msg()
-            self.pub.publish(self.msg)
+            # Drain every complete line, not one per tick: at one line per 10 ms the
+            # node tops out at 100 Hz, so a faster ESP32 stream piles up in the serial
+            # buffer and the published pressure falls further and further behind.
+            # Each sample is published so the 7-point average downstream spans 7 raw
+            # samples, as the simulator's sensor model assumes.
+            for _ in range(self.MAX_LINES_PER_TICK):
+                ser_bytes = self.ser.readline().decode("utf-8", errors="ignore")
+                if ser_bytes.strip():
+                    values = self._parse_pressure_line(ser_bytes)
+                    if values is not None:
+                        self.msg.ch = self.num_channels
+                        self.msg.data = values
+                        self.msg.header.stamp = self.get_clock().now().to_msg()
+                        self.pub.publish(self.msg)
+                if self.ser.in_waiting == 0:
+                    break
         except Exception as exc:
             self.get_logger().error("SensorComError: %s" % exc)
 

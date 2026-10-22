@@ -51,6 +51,7 @@ class CupConfig:
         self.name = name
         self.chambers = int(entry['chambers'])
         self.tcp_offset = [float(v) for v in entry['tcp_offset']]
+        self.lip_radius_mm = float(entry.get('lip_radius_mm', 5.0))
         self.chamber_map = entry.get('chamber_map')
         self.body_offset_deg = entry.get('body_offset_deg')
         self.calibrated = bool(entry.get('calibrated', False))

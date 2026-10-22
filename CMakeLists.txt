@@ -23,6 +23,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   src/ESP32_PWM.py
   src/ESP32_Pressure.py
   src/ft_monitor.py
+  src/haptic_chamber_check.py
+  src/haptic_fixture_calibration.py
+  src/haptic_pressure_check.py
+  src/haptic_trial_runner.py
   src/realsense_sphere_detector.py
   src/robotStatePublisher.py
   src/sphere_sweep_experiment.py
