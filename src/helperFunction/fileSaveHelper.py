@@ -25,29 +25,35 @@ class fileSaveHelp(object):
             print(e)
         return "none"
     
-    # Clear all csv files in the tmp folder
-    def clearTmpFolder(self):
+    # The csv files in /tmp that this user's logger wrote. /tmp is shared, and
+    # another account's leftover logs can be neither removed nor moved by us,
+    # so they are skipped rather than aborting the run.
+    def tmpCsvFiles(self):
         fileList = []
         for file in os.listdir("/tmp"):
-            if file.endswith(".csv"):
-                fileList.append(os.path.join("/tmp", file))        
-        for fileName in fileList:
+            fileName = os.path.join("/tmp", file)
+            if file.endswith(".csv") and os.stat(fileName).st_uid == os.getuid():
+                fileList.append(fileName)
+        return fileList
+
+    # Clear all csv files in the tmp folder
+    def clearTmpFolder(self):
+        for fileName in self.tmpCsvFiles():
             os.remove(fileName)
 
 
-    def saveDataParams(self, args=None, appendTxt = ''):    
+    def saveDataParams(self, args=None, appendTxt = ''):
 
         #check if CSV Files are available
         tmp_dummyFolder = '/tmp/processed_csv'
+        if os.path.exists(tmp_dummyFolder) and not os.access(tmp_dummyFolder, os.W_OK):
+            tmp_dummyFolder = '/tmp/processed_csv_%d' % os.getuid()
         if not os.path.exists(tmp_dummyFolder):
             os.makedirs(tmp_dummyFolder)
-        
-        # First Check all CSV files in /tmp/ and bring them in as a variable  
-        fileList = []
-        for file in os.listdir("/tmp"):
-            if file.endswith(".csv"):
-                fileList.append(os.path.join("/tmp", file))
-                
+
+        # First Check all CSV files in /tmp/ and bring them in as a variable
+        fileList = self.tmpCsvFiles()
+
         print("csv files: ", fileList)
         if not fileList:
             raise RuntimeError(
