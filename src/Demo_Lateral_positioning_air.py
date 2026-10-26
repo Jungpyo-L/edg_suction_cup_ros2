@@ -76,7 +76,8 @@ def main(args):
         else:
             default_yaw = pi / 2 - 45 * pi / 180
 
-        set_orientation = Rotation.from_euler("ZXY", [default_yaw, pi, 0]).as_quat()
+        # ROS1 'szxy' = static (extrinsic) axes = scipy lowercase "zxy"; intrinsic "ZXY" flips the yaw sign.
+        set_orientation = Rotation.from_euler("zxy", [default_yaw, pi, 0]).as_quat()
         disengage_pose = rtde_help.getPoseObj(disengage_position_init, set_orientation)
 
         time_limit = 20

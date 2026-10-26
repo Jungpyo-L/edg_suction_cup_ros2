@@ -90,8 +90,10 @@ def spin_briefly(node, n=5, timeout_sec=0.05):
 
 
 def yaw_quat(yaw_rad):
-    # Matches the old tf.transformations.quaternion_from_euler(..., 'szxy') usage.
-    return Rotation.from_euler("ZXY", [yaw_rad, pi, 0]).as_quat()
+    # Same as the ROS1 tf.transformations.quaternion_from_euler(yaw, pi, 0, 'szxy'): 's' = static (extrinsic) axes,
+    # i.e. scipy's lowercase "zxy". The first ROS2 port used intrinsic "ZXY", which flips the tool yaw sign
+    # (yaw pi/2 pointed the tool 180 deg away from the ROS1 pose and the yaw sweep ran the other way).
+    return Rotation.from_euler("zxy", [yaw_rad, pi, 0]).as_quat()
 
 
 def default_yaw_for_channels(n_ch):
