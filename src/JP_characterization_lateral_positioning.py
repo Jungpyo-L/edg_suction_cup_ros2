@@ -5,6 +5,8 @@
 
 import argparse
 import copy
+import json
+from pathlib import Path
 import pickle
 import time
 from math import floor, pi
@@ -37,6 +39,10 @@ from suction_cup.srv import Enable
 # disengage_by_corner: fallback hover poses keyed by --corner (90 / 180 / 270)
 # =============================================================================
 ACTIVE_SETUP = "default"
+
+# Contact points recorded by record_corner_location.py (lip just touching, cup centred on the edge / corner vertex).
+# When an entry exists for (setup, ch, corner) it replaces disengage_by_corner below; --pose_x/y/z still win.
+LOCATIONS_FILE = Path.home() / "ros2_ws" / "src" / "suction_cup" / "config" / "lateral_corner_locations.json"
 
 P_MAX_PA = 64400.0          # sealed vacuum on a flat surface
 SEAL_CHECK_FRAC = 0.8
@@ -100,6 +106,13 @@ def default_yaw_for_channels(n_ch):
     return pi / 2 - 45 * pi / 180
 
 
+def load_recorded_location(setup, ch, corner):
+    if not LOCATIONS_FILE.exists():
+        return None
+    data = json.loads(LOCATIONS_FILE.read_text())
+    return data.get(setup, {}).get("ch%d" % ch, {}).get(str(corner))
+
+
 def resolve_hardware(args):
     """Return (tcp_offset, disengage_position) from SETUP + CLI overrides."""
     if args.setup not in SETUPS:
@@ -116,7 +129,11 @@ def resolve_hardware(args):
     if args.tcp_y is not None:
         tcp_offset[1] = args.tcp_y
 
-    if setup.get("disengage_position") is not None:
+    recorded = load_recorded_location(args.setup, args.ch, args.corner)
+    if recorded is not None:
+        disengage = list(recorded["position"])
+        print("using the recorded location from %s (%s)" % (LOCATIONS_FILE, recorded.get("recorded", "")))
+    elif setup.get("disengage_position") is not None:
         disengage = list(setup["disengage_position"])
     else:
         by_corner = setup.get("disengage_by_corner") or {}
