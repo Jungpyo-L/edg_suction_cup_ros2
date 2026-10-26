@@ -60,6 +60,9 @@ SETUPS = {
         "disengage_by_corner": {
             90: [0.6165, -0.2258, 0.0170],
             180: [0.6092, -0.275, 0.0180],
+            # 270: ROS1 kept a temporary placement ('with tank, need to move back'); the original was
+            # [0.6280, -0.1760, 0.0170]. The fixture has moved since: record the real location with
+            # record_corner_location.py (config/lateral_corner_locations.json wins over these values).
             270: [0.555, 0.100, 0.0170],
         },
     },
