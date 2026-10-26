@@ -19,6 +19,15 @@
 // Status: bit6 powered, bit5 busy, bit2 memory error, bit0 math saturation.
 // psi = (count - 10 % of 2^24) * 25 / (80 % of 2^24); Pa = psi * 6894.757.
 // Both Feather variants switch the STEMMA QT / I2C power on in initVariant(), so no power pin handling is needed here.
+//
+// Status LEDs (both Feathers: red LED on GPIO 13 next to the USB port, NeoPixel inside; see LED STATUS below):
+//   red LED                                   NeoPixel
+//   slow blink (1 Hz)   idle, sensors ok      blue
+//   solid on            streaming, ok         green
+//   k blinks + pause    chamber k failing     orange   (not responding, or a read error within the last second;
+//                                                       the lowest failing chamber is shown, '?' lists all)
+//   fast blink (5 Hz)   mux not found         red
+//   -                   command received      short white flash
 
 #include <Wire.h>
 
@@ -50,6 +59,8 @@ const uint8_t MUX_PORT[N_SENSORS] = {0, 1, 2};     // mux port of chamber 1, 2, 
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 13
 #endif
+#define NEOPIXEL_LEVEL 24                          // NeoPixel brightness 0-255 (it sits right under the board)
+#define ERROR_HOLD_MS 1000                         // a read error marks the chamber failing for this long
 
 const float PSI_TO_PA = 6894.757f;
 const uint32_t COUNT_MIN = 0x19999A;               // 10 % of 2^24
@@ -60,6 +71,8 @@ State state = IDLE;
 bool mux_ok = false;
 bool present[N_SENSORS];
 uint32_t samples = 0, read_errors[N_SENSORS];
+uint32_t last_error_ms[N_SENSORS];
+uint32_t flash_until_ms = 0;
 uint32_t period_us = 0, next_us = 0, stream_start_us = 0;
 
 bool muxSelect(uint8_t port) {
@@ -131,12 +144,53 @@ void report() {
   }
 }
 
+// ===== LED STATUS =====================================================================================================
+int failingChamber() {                             // 1-based number of the lowest failing chamber, 0 if none
+  uint32_t now = millis();
+  for (int k = 0; k < N_SENSORS; k++) {
+    if (!present[k] || (last_error_ms[k] && now - last_error_ms[k] < ERROR_HOLD_MS)) return k + 1;
+  }
+  return 0;
+}
+
+void setNeoPixel(uint8_t r, uint8_t g, uint8_t b) {
+#ifdef PIN_NEOPIXEL
+  static int32_t last = -1;
+  int32_t rgb = ((int32_t)r << 16) | ((int32_t)g << 8) | b;
+  if (rgb == last) return;                         // only talk to the pixel when the colour changes
+  last = rgb;
+  rgbLedWrite(PIN_NEOPIXEL, r, g, b);
+#endif
+}
+
+void updateLeds() {
+  uint32_t now = millis();
+  int bad = failingChamber();
+  bool red;
+  if (!mux_ok) {
+    red = (now / 100) % 2;                                         // fast blink
+    setNeoPixel(NEOPIXEL_LEVEL, 0, 0);
+  } else if (bad) {
+    uint32_t cycle = bad * 400 + 1200, t = now % cycle;             // 'bad' blinks of 200 ms, then a pause
+    red = t < (uint32_t)bad * 400 && (t % 400) < 200;
+    setNeoPixel(NEOPIXEL_LEVEL, NEOPIXEL_LEVEL / 3, 0);
+  } else if (state == STREAMING) {
+    red = true;
+    setNeoPixel(0, NEOPIXEL_LEVEL, 0);
+  } else {
+    red = (now % 1000) < 500;                                      // slow blink
+    setNeoPixel(0, 0, NEOPIXEL_LEVEL);
+  }
+  if ((int32_t)(flash_until_ms - now) > 0) setNeoPixel(NEOPIXEL_LEVEL, NEOPIXEL_LEVEL, NEOPIXEL_LEVEL);
+  digitalWrite(LED_BUILTIN, red ? HIGH : LOW);
+}
+// =====================================================================================================================
+
 void startStreaming() {
   probeMissing();
   state = STREAMING;
   samples = 0;
   stream_start_us = next_us = micros();
-  digitalWrite(LED_BUILTIN, HIGH);
 }
 
 void setup() {
@@ -146,7 +200,7 @@ void setup() {
   Wire.begin();
   Wire.setClock(400000);
   delay(50);
-  for (int k = 0; k < N_SENSORS; k++) { present[k] = false; read_errors[k] = 0; }
+  for (int k = 0; k < N_SENSORS; k++) { present[k] = false; read_errors[k] = 0; last_error_ms[k] = 0; }
   probeMissing();
   if (SAMPLE_HZ > 0) period_us = (uint32_t)(1e6 / SAMPLE_HZ);
   report();
@@ -156,11 +210,11 @@ void setup() {
 void handleCommand() {
   while (Serial.available()) {
     char c = Serial.read();
+    if (c == 's' || c == 'i' || c == '?') flash_until_ms = millis() + 150;
     if (c == 's' && state != STREAMING) {
       startStreaming();
     } else if (c == 'i') {
       state = IDLE;
-      digitalWrite(LED_BUILTIN, LOW);
     } else if (c == '?') {
       probeMissing();
       report();
@@ -170,6 +224,7 @@ void handleCommand() {
 
 void loop() {
   handleCommand();
+  updateLeds();
   if (state != STREAMING) { delay(2); return; }
   if (SAMPLE_HZ > 0) {                                             // fixed rate
     if ((int32_t)(micros() - next_us) < 0) return;
@@ -185,7 +240,7 @@ void loop() {
   delayMicroseconds(CONVERSION_MIN_US);                            // ... let them convert in parallel ...
   for (int k = 0; k < N_SENSORS; k++) {                            // ... then read each one
     if (!isnan(p[k])) p[k] = mprRead(MUX_PORT[k], t_start);
-    if (isnan(p[k])) read_errors[k]++;
+    if (isnan(p[k])) { read_errors[k]++; last_error_ms[k] = millis() | 1; }
   }
 
   for (int k = 0; k < N_SENSORS; k++) {

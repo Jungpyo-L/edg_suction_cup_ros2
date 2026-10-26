@@ -24,6 +24,20 @@ no external library (the old ones needed the unavailable `Adafruit_MPRLS_JP`); e
 printed sensor 3 twice); no halt in `setup()` when a sensor does not answer; one failing chamber no longer stops the
 whole stream; fixed-rate option.
 
+### Status LEDs
+
+Both Feathers: red LED on GPIO 13 (next to the USB port, easy to see) and the NeoPixel (S3: GPIO 33, V2: GPIO 0).
+
+| Board state | Red LED | NeoPixel |
+|---|---|---|
+| idle, all sensors ok | slow blink (1 Hz) | blue |
+| streaming, all sensors ok | solid on | green |
+| chamber *k* failing (not responding, or a read error in the last second) | *k* short blinks, pause, repeat | orange |
+| mux not found at 0x70 | fast blink (5 Hz) | red |
+| command (`s`, `i`, `?`) received | - | short white flash |
+
+With several failing chambers the lowest number blinks; `?` lists all of them.
+
 ### Upload
 
 Arduino IDE (Windows): install the "esp32 by Espressif Systems" boards package, open
