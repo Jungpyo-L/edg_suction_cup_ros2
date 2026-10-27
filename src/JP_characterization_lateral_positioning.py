@@ -349,7 +349,7 @@ def main(args):
 
         input("Press <Enter> to start to data collection")
         start_angle_flag = True
-        xoffsets = np.arange(xoffset, 5, 1)
+        xoffsets = np.arange(xoffset, args.xoffset_end + 1, 1)   # mm, both ends included
         suction_flag = False
 
         for j in xoffsets:
@@ -548,6 +548,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--xoffset", type=int, help="x direction offset (mm)", default=-4
+    )
+    parser.add_argument(
+        "--xoffset_end", type=int, help="last x offset (mm, included); the sweep runs --xoffset .. --xoffset_end", default=4
     )
     parser.add_argument(
         "--angle", type=int, help="angles of exploration (deg)", default=360
