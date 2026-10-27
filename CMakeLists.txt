@@ -25,6 +25,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   src/ft_monitor.py
   src/record_corner_location.py
   src/realsense_sphere_detector.py
+  src/seal_check.py
   src/robotStatePublisher.py
   src/sphere_sweep_experiment.py
   src/simple_data_log.py
