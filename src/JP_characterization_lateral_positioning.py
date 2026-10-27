@@ -46,6 +46,7 @@ LOCATIONS_FILE = Path.home() / "ros2_ws" / "src" / "suction_cup" / "config" / "l
 
 P_MAX_PA = 64400.0          # sealed vacuum on a flat surface
 SEAL_CHECK_FRAC = 0.8
+APPROACH_MM = 30.0           # travel height above the start point for the first move
 
 SETUPS = {
     # Old cell values kept as a starting point — measure and replace for new HW.
@@ -244,6 +245,13 @@ def main(args):
         disengage_pose = rtde_help.getPoseObj(disengage_position_init, set_orientation)
 
         input("Press <Enter> to go disEngagePose")
+        # Never cross the fixture low: a previous run stopped with Ctrl+C can leave the cup pressed on another object.
+        # Lift straight up to APPROACH_MM above the target, travel there, then go down.
+        current = list(rtde_help.rtde_r.getActualTCPPose())
+        travel_z = max(current[2], disengage_position_init[2] + APPROACH_MM / 1000.0)
+        rtde_help.rtde_c.moveL(current[:2] + [travel_z] + current[3:], 0.05, 0.2)
+        above = list(disengage_position_init[:2]) + [travel_z]
+        rtde_help.goToPose(rtde_help.getPoseObj(above, set_orientation))
         rtde_help.goToPose(disengage_pose)
         time.sleep(0.1)
 
