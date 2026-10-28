@@ -44,7 +44,7 @@ def spin_for(node, seconds, p_help=None):
 
 def main(args):
     tcp_offset, start = lateral.resolve_hardware(args)
-    default_yaw = lateral.default_yaw_for_channels(args.ch)
+    default_yaw = lateral.default_yaw_for_channels(args.ch) - np.radians(args.axis_deg)   # turn with the bisector
     rclpy.init()
     node = rclpy.create_node("seal_check")
     pwm = node.create_publisher(Int8, "pwm", 1)
@@ -69,7 +69,7 @@ def main(args):
             for yaw in args.yaw:
                 orientation = lateral.yaw_quat(default_yaw - yaw * pi / 180)
                 contact = copy.deepcopy(list(start))
-                contact[0] += x / 1000.0
+                lateral.shift_along_axis(contact, x, args.axis_deg)    # along the recorded bisector, as the sweep
                 above = contact[:2] + [travel_z]
                 press = contact[:2] + [start[2] - args.deformation / 1000.0]
                 rtde_help.goToPose(rtde_help.getPoseObj(above, orientation))
