@@ -19,6 +19,22 @@ def _read_key(timeout=0.1):
     return sys.stdin.read(1) if ready else None
 
 
+def ensure_control_script(rtde_help):
+    """Moving the arm from the teach pendant stops the ur_rtde control script on the controller, after which moveL
+    calls do nothing. Re-upload it if it is not running, and set the TCP again: when the script stops the controller
+    falls back to the installation TCP, which would change every pose read afterwards."""
+    c = rtde_help.rtde_c
+    if not c.isProgramRunning():
+        print("  control script not running (teach pendant used?) - re-uploading")
+        c.reuploadScript()
+        if getattr(rtde_help, "tcp_offset", None) is not None:
+            c.setTcp(rtde_help.tcp_offset)
+            print("  TCP offset set again: %s" % rtde_help.tcp_offset)
+        if not c.isProgramRunning():
+            raise RuntimeError("Could not restart the RTDE control script; check the pendant (remote control mode, "
+                               "no program running) and restart this tool")
+
+
 def jog(rtde_help, label="", z_floor=None, step_mm=0.5):
     """Jog until Enter; returns the final TCP pose [x, y, z, rx, ry, rz] (m, rad).
 
@@ -49,7 +65,9 @@ def jog(rtde_help, label="", z_floor=None, step_mm=0.5):
             if z_floor is not None and target[2] < z_floor:
                 print("  refused: below the allowed height (%.2f mm)" % (z_floor * 1000))
                 continue
-            rtde_help.rtde_c.moveL(target, JOG_SPEED, JOG_ACC)
+            ensure_control_script(rtde_help)
+            if not rtde_help.rtde_c.moveL(target, JOG_SPEED, JOG_ACC):
+                print("  move refused by the controller (protective stop or limits?)")
             p = rtde_help.rtde_r.getActualTCPPose()
             print("  x %.2f  y %.2f  z %.2f mm" % (p[0] * 1000, p[1] * 1000, p[2] * 1000))
     finally:

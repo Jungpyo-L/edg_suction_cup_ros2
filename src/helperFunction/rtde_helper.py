@@ -220,6 +220,9 @@ class rtdeHelp(object):
         return self.rtde_c.getTCPOffset()
 
     def setTCPoffset(self, offset):
+        # remembered so it can be set again after the control script is re-uploaded (the controller falls back to the
+        # installation TCP when the script stops, e.g. after the teach pendant moves the arm)
+        self.tcp_offset = list(offset)
         return self.rtde_c.setTcp(offset)
 
     def getMethodsName_r(self):
