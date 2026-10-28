@@ -10,6 +10,10 @@
 # the lip just touches the top surface with the cup centred on the edge / corner vertex (x offset 0). Enter saves the
 # point to config/lateral_corner_locations.json under (setup, ch, corner); the characterization script then uses it
 # instead of the hard-coded disengage_by_corner value.
+#
+# --marker (corner 270, fixtures/corner_marker): first lower the cup into the bore of the centring marker laid on the
+# object (xy), lift, remove the marker, then lower at the same xy until the lip touches (z). Removes the eye-alignment
+# error of the vertex (about 2 mm on 2026-10-27).
 
 import argparse
 import json
@@ -59,8 +63,26 @@ def main(args):
             rtde_help.goToPose(rtde_help.getPoseObj(here, orientation), speed=MOVE_SPEED, acc=MOVE_ACC)
 
         start_z = list(rtde_help.rtde_r.getActualTCPPose())[2]
-        pose = jog(rtde_help, "corner %d: lip just touching, cup centred on the edge / vertex" % args.corner,
-                   z_floor=start_z - args.max_drop_mm / 1000.0)
+        if args.marker:
+            # xy from the centring marker (fixtures/corner_marker): the cup sits in the marker bore, so its centre is the
+            # vertex; z afterwards on the bare object, at the same xy
+            pose = jog(rtde_help, "marker on: lower the cup into the marker bore until it sits (no force), then Enter",
+                       z_floor=start_z - args.max_drop_mm / 1000.0)
+            xy = pose[:2]
+            print("xy from the marker: x %.2f y %.2f mm" % (xy[0] * 1000, xy[1] * 1000))
+            lifted = list(pose)
+            lifted[2] += args.marker_lift_mm / 1000.0
+            rtde_help.rtde_c.moveL(lifted, MOVE_SPEED / 2, MOVE_ACC)
+            input("Remove the marker, then Enter (the cup stays at this xy) ")
+            pose = jog(rtde_help, "marker off: only f / r (down / up) until the lip just touches; x, y must not change",
+                       z_floor=start_z - args.max_drop_mm / 1000.0)
+            drift = np.hypot(pose[0] - xy[0], pose[1] - xy[1]) * 1000
+            if drift > 0.01:
+                print("WARNING: xy moved %.2f mm during the height step; the marker xy is kept" % drift)
+            pose = list(xy) + [pose[2]]
+        else:
+            pose = jog(rtde_help, "corner %d: lip just touching, cup centred on the edge / vertex" % args.corner,
+                       z_floor=start_z - args.max_drop_mm / 1000.0)
         position = [round(v, 5) for v in pose[:3]]
         print("recorded: x %.2f y %.2f z %.2f mm (moved %.2f / %.2f / %.2f mm from the stored location)" % (
             *(np.array(position) * 1000), *((np.array(position) - np.array(stored)) * 1000)))
@@ -102,4 +124,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_drop_mm", type=float, default=60.0, help="jog floor below the start height")
     parser.add_argument("--lift_mm", type=float, default=10.0, help="lift after saving")
     parser.add_argument("--note", default="")
+    parser.add_argument("--marker", action="store_true",
+                        help="two steps: xy with the centring marker in place, then z on the bare object")
+    parser.add_argument("--marker_lift_mm", type=float, default=15.0, help="lift above the marker before removing it")
     main(parser.parse_args())
