@@ -38,7 +38,7 @@ from ais_haptic.robot_frame import load_cups, tool_tilt_deg, tool_yaw_deg
 from helperFunction.rtde_helper import rtdeHelp
 
 JOG_KEYS = {"d": (1, 0, 0), "a": (-1, 0, 0), "w": (0, 1, 0), "s": (0, -1, 0), "r": (0, 0, 1), "f": (0, 0, -1)}
-STEPS_MM = {"6": 50.0, "5": 10.0, "1": 2.0, "2": 0.5, "3": 0.1, "4": 0.02}
+STEPS_MM = {"1": 0.02, "2": 0.1, "3": 0.5, "4": 2.0, "5": 10.0, "6": 50.0}   # 1 = finest ... 6 = coarsest
 JOG_SPEED, JOG_ACC = 0.01, 0.1   # m/s, m/s^2: slow enough to stop on a key release
 MAX_Z_DROP_M = 0.060             # refuse to jog more than 60 mm below the starting height
 
@@ -54,7 +54,7 @@ def actual_pose(rtde):
 
 def jog_to_bore(rtde, label, z_floor):
     """Keyboard jog with fixed orientation. Returns when Enter is pressed; 'q' aborts."""
-    print("\n[%s] jog:  a/d -x/+x   s/w -y/+y   f/r down/up (base frame)   step 6:50 5:10 1:2 2:0.5 3:0.1 4:0.02 mm" % label)
+    print("\n[%s] jog:  a/d -x/+x   s/w -y/+y   f/r down/up (base frame)   step 1:0.02 2:0.1 3:0.5 4:2 5:10 6:50 mm" % label)
     print("        Enter: record this pose    q: abort")
     step = 0.5
     old = termios.tcgetattr(sys.stdin)
