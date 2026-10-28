@@ -2,7 +2,10 @@
 """Keyboard jog of the UR TCP in the base frame with the tool orientation held fixed (moveL steps through ur_rtde).
 
 Used to set heights and positions by hand without the pendant: a/d -x/+x, s/w -y/+y, f/r down/up,
-6/5/1/2/3/4 select a 50/10/2/0.5/0.1/0.02 mm step, Enter accepts, q aborts (KeyboardInterrupt).
+6/5/1/2/3/4 select a 50/10/2/0.5/0.1/0.02 mm step, t toggles freedrive (push the arm by hand; on leaving it the tool is
+turned back to the orientation it had when the jog started), Enter accepts, q aborts (KeyboardInterrupt).
+The teach pendant can also be used in between (the control script and TCP are restored automatically), but freedrive
+keeps the connection and is quicker.
 """
 import select
 import sys
@@ -41,13 +44,36 @@ def jog(rtde_help, label="", z_floor=None, step_mm=0.5):
     z_floor (m): refuse steps that would go below it (the only guard against pressing into the object).
     """
     print("\n[%s] jog:  a/d -x/+x   s/w -y/+y   f/r down/up (base frame)" % label)
-    print("        step 6:50 5:10 1:2 2:0.5 3:0.1 4:0.02 mm   Enter: accept   q: abort")
+    print("        step 6:50 5:10 1:2 2:0.5 3:0.1 4:0.02 mm   t: freedrive on/off (move by hand)   Enter: accept   q: abort")
+    ensure_control_script(rtde_help)
+    home_rot = list(rtde_help.rtde_r.getActualTCPPose())[3:]       # orientation to keep (tool down, set yaw)
+    freedrive = False
     old = termios.tcgetattr(sys.stdin)
     try:
         tty.setcbreak(sys.stdin.fileno())
         while True:
             key = _read_key()
             if key is None:
+                continue
+            if key == "t":
+                if not freedrive:
+                    ensure_control_script(rtde_help)
+                    rtde_help.rtde_c.teachMode()
+                    freedrive = True
+                    print("  FREEDRIVE: push the arm by hand, then t again")
+                else:
+                    rtde_help.rtde_c.endTeachMode()
+                    freedrive = False
+                    p = list(rtde_help.rtde_r.getActualTCPPose())
+                    rtde_help.rtde_c.moveL(p[:3] + home_rot, JOG_SPEED, JOG_ACC)   # square the tool again, same point
+                    p = rtde_help.rtde_r.getActualTCPPose()
+                    print("  freedrive off, tool squared: x %.2f  y %.2f  z %.2f mm" % (p[0] * 1000, p[1] * 1000, p[2] * 1000))
+                continue
+            if freedrive:
+                if key == "q":
+                    raise KeyboardInterrupt                                   # finally ends freedrive
+                if key in ("\n", "\r") or key in JOG_KEYS:
+                    print("  leave freedrive first (t)")
                 continue
             if key in ("\n", "\r"):
                 return list(rtde_help.rtde_r.getActualTCPPose())
@@ -71,4 +97,9 @@ def jog(rtde_help, label="", z_floor=None, step_mm=0.5):
             p = rtde_help.rtde_r.getActualTCPPose()
             print("  x %.2f  y %.2f  z %.2f mm" % (p[0] * 1000, p[1] * 1000, p[2] * 1000))
     finally:
+        if freedrive:
+            try:
+                rtde_help.rtde_c.endTeachMode()
+            except Exception:
+                pass
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
