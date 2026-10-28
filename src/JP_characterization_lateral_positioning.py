@@ -139,6 +139,13 @@ def load_recorded_location(setup, ch, corner):
     return data.get(setup, {}).get("ch%d" % ch, {}).get(str(corner))
 
 
+def shift_along_axis(position, offset_mm, axis_deg):
+    """Move position (m) by offset_mm along the bisector (negative = more covered)."""
+    a = np.radians(axis_deg)
+    position[0] += offset_mm * 1e-3 * np.cos(a)
+    position[1] += offset_mm * 1e-3 * np.sin(a)
+
+
 def resolve_hardware(args):
     """Return (tcp_offset, disengage_position) from SETUP + CLI overrides."""
     if args.setup not in SETUPS:
@@ -156,6 +163,8 @@ def resolve_hardware(args):
         tcp_offset[1] = args.tcp_y
 
     recorded = load_recorded_location(args.setup, args.ch, args.corner)
+    # bisector direction in the robot frame (deg, CCW seen from above); recorded with --plate, else the base x axis
+    args.axis_deg = float(recorded.get("axis_deg", 0.0)) if recorded is not None else 0.0
     if recorded is not None:
         disengage = list(recorded["position"])
         print("using the recorded location from %s (%s)" % (LOCATIONS_FILE, recorded.get("recorded", "")))
@@ -241,6 +250,9 @@ def main(args):
         xoffset = args.xoffset
 
         default_yaw = default_yaw_for_channels(args.ch)
+        # turn with the bisector so theta 0 keeps the same chamber direction relative to the object
+        default_yaw -= np.radians(args.axis_deg)
+        print("bisector %.2f deg in the robot frame" % args.axis_deg)
         set_orientation = yaw_quat(pi / 2)
         disengage_pose = rtde_help.getPoseObj(disengage_position_init, set_orientation)
 
@@ -324,7 +336,7 @@ def main(args):
             # cup or the object leaks, independent of the offset/yaw sweep.
             input("Press <Enter> for the seal check at x offset %.1f mm" % args.seal_check_x)
             check_position = copy.deepcopy(disengage_position_init)
-            check_position[0] += args.seal_check_x * 0.001
+            shift_along_axis(check_position, args.seal_check_x, args.axis_deg)
             rtde_help.goToPose(rtde_help.getPoseObj(check_position, yaw_quat(default_yaw)))
             p_help.startSampling()
             time.sleep(0.3)
@@ -357,7 +369,7 @@ def main(args):
             args.xoffset = int(j)
             disengage_position = copy.deepcopy(disengage_position_init)
             print("disengagePosition: ", disengage_position)
-            disengage_position[0] += j * 0.001
+            shift_along_axis(disengage_position, j, args.axis_deg)
             print("disengagePosition: ", disengage_position)
             engage_position = copy.deepcopy(disengage_position)
             engage_position[2] = engage_z

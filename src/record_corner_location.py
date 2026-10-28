@@ -11,12 +11,14 @@
 # point to config/lateral_corner_locations.json under (setup, ch, corner); the characterization script then uses it
 # instead of the hard-coded disengage_by_corner value.
 #
-# --marker (corner 270, fixtures/corner_marker): first lower the cup into the bore of the centring marker laid on the
-# object (xy), lift, remove the marker, then lower at the same xy until the lip touches (z). Removes the eye-alignment
-# error of the vertex (about 2 mm on 2026-10-27).
+# --plate (corner 270 laser-cut plate, fixtures/corner_plate): seat the cup in calibration bores A and B (each
+# self-centring), which gives the plate position and the bisector direction; the vertex follows from the drawing,
+# then lower at the vertex until the lip touches (z). The bisector angle is saved and the sweep offsets follow it.
+# Removes the eye-alignment error of the vertex (about 2 mm on 2026-10-27).
 
 import argparse
 import json
+from pathlib import Path
 import time
 from datetime import datetime
 from math import pi
@@ -30,6 +32,7 @@ from helperFunction.keyboard_jog import jog
 from helperFunction.rtde_helper import rtdeHelp
 
 APPROACH_MM = 30.0
+PLATE_FILE = Path.home() / "ros2_ws" / "src" / "suction_cup" / "fixtures" / "corner_plate" / "corner270_plate.json"
 MOVE_SPEED, MOVE_ACC = 0.05, 0.2
 
 
@@ -63,23 +66,43 @@ def main(args):
             rtde_help.goToPose(rtde_help.getPoseObj(here, orientation), speed=MOVE_SPEED, acc=MOVE_ACC)
 
         start_z = list(rtde_help.rtde_r.getActualTCPPose())[2]
-        if args.marker:
-            # xy from the centring marker (fixtures/corner_marker): the cup sits in the marker bore, so its centre is the
-            # vertex; z afterwards on the bare object, at the same xy
-            pose = jog(rtde_help, "marker on: lower the cup into the marker bore until it sits (no force), then Enter",
+        extra = {}
+        if args.plate:
+            # Laser-cut corner plate (fixtures/corner_plate): the cup self-centres in bores A and B; their centres give
+            # the plate position and the bisector direction, the vertex follows from the plate geometry, and z is
+            # taken by touching the plate top at the vertex.
+            geo = json.loads(PLATE_FILE.read_text())
+            centres = []
+            for name in ("A", "B"):
+                p = jog(rtde_help, "lower the cup into bore %s until it sits (no force), then Enter" % name,
+                        z_floor=start_z - args.max_drop_mm / 1000.0)
+                centres.append(np.array(p[:2]))
+                print("bore %s: x %.2f y %.2f mm" % (name, p[0] * 1000, p[1] * 1000))
+                up = list(p)
+                up[2] += args.marker_lift_mm / 1000.0
+                rtde_help.rtde_c.moveL(up, MOVE_SPEED / 2, MOVE_ACC)
+            ab = (centres[1] - centres[0]) * 1000.0
+            nominal = np.subtract(geo["bore_b"], geo["bore_a"])
+            dist, dist_nom = float(np.linalg.norm(ab)), float(np.linalg.norm(nominal))
+            u = ab / dist
+            axis = float(np.degrees(np.arctan2(u[1], u[0])) - np.degrees(np.arctan2(nominal[1], nominal[0])))
+            rel = np.subtract(geo["vertex"], geo["bore_b"])             # plate frame, mm
+            perp = np.array([-u[1], u[0]])
+            vertex = centres[1] + (rel[0] * u + rel[1] * perp) / 1000.0
+            print("A-B distance %.2f mm (plate %.2f mm, error %+.2f); bisector %.2f deg; vertex x %.2f y %.2f mm" % (
+                dist, dist_nom, dist - dist_nom, axis, vertex[0] * 1000, vertex[1] * 1000))
+            if abs(dist - dist_nom) > 0.5:
+                print("WARNING: bores A-B differ from the drawing by more than 0.5 mm; re-seat the cup and record again")
+            here = list(rtde_help.rtde_r.getActualTCPPose())
+            rtde_help.rtde_c.moveL(list(vertex) + here[2:], MOVE_SPEED / 2, MOVE_ACC)
+            pose = jog(rtde_help, "above the vertex: only f / r (down / up) until the lip just touches; x, y must not change",
                        z_floor=start_z - args.max_drop_mm / 1000.0)
-            xy = pose[:2]
-            print("xy from the marker: x %.2f y %.2f mm" % (xy[0] * 1000, xy[1] * 1000))
-            lifted = list(pose)
-            lifted[2] += args.marker_lift_mm / 1000.0
-            rtde_help.rtde_c.moveL(lifted, MOVE_SPEED / 2, MOVE_ACC)
-            input("Remove the marker, then Enter (the cup stays at this xy) ")
-            pose = jog(rtde_help, "marker off: only f / r (down / up) until the lip just touches; x, y must not change",
-                       z_floor=start_z - args.max_drop_mm / 1000.0)
-            drift = np.hypot(pose[0] - xy[0], pose[1] - xy[1]) * 1000
+            drift = np.hypot(pose[0] - vertex[0], pose[1] - vertex[1]) * 1000
             if drift > 0.01:
-                print("WARNING: xy moved %.2f mm during the height step; the marker xy is kept" % drift)
-            pose = list(xy) + [pose[2]]
+                print("WARNING: xy moved %.2f mm during the height step; the computed vertex xy is kept" % drift)
+            pose = list(vertex) + [pose[2]]
+            extra = dict(axis_deg=round(axis, 3), plate=dict(file=str(PLATE_FILE), bore_a=centres[0].round(5).tolist(),
+                                                             bore_b=centres[1].round(5).tolist(), ab_mm=round(dist, 3)))
         else:
             pose = jog(rtde_help, "corner %d: lip just touching, cup centred on the edge / vertex" % args.corner,
                        z_floor=start_z - args.max_drop_mm / 1000.0)
@@ -92,7 +115,7 @@ def main(args):
         if str(args.corner) in entry:
             print("replacing previous: %s" % entry[str(args.corner)])
         entry[str(args.corner)] = dict(position=position, tcp_offset=tcp_offset,
-                                       recorded=datetime.now().isoformat(timespec="seconds"), note=args.note)
+                                       recorded=datetime.now().isoformat(timespec="seconds"), note=args.note, **extra)
         lateral.LOCATIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
         lateral.LOCATIONS_FILE.write_text(json.dumps(data, indent=1))
         print("saved to %s" % lateral.LOCATIONS_FILE)
@@ -124,7 +147,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_drop_mm", type=float, default=60.0, help="jog floor below the start height")
     parser.add_argument("--lift_mm", type=float, default=10.0, help="lift after saving")
     parser.add_argument("--note", default="")
-    parser.add_argument("--marker", action="store_true",
-                        help="two steps: xy with the centring marker in place, then z on the bare object")
-    parser.add_argument("--marker_lift_mm", type=float, default=15.0, help="lift above the marker before removing it")
+    parser.add_argument("--plate", action="store_true",
+                        help="laser-cut corner plate: seat the cup in bores A and B, then touch at the computed vertex")
+    parser.add_argument("--marker_lift_mm", type=float, default=15.0, help="lift after seating the cup in a bore")
     main(parser.parse_args())

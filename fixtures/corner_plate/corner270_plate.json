@@ -1,0 +1,31 @@
+{
+ "units": "mm",
+ "frame": "plate: x along the bisector from the left end, y across; vertex open toward +x",
+ "vertex": [
+  165.0,
+  0.0
+ ],
+ "bore_a": [
+  40.0,
+  0.0
+ ],
+ "bore_b": [
+  125.0,
+  0.0
+ ],
+ "bore_diameter": 23.4,
+ "m6_holes": [
+  [
+   12.5,
+   12.5
+  ],
+  [
+   12.5,
+   -12.5
+  ]
+ ],
+ "length": 200.0,
+ "width": 70.0,
+ "thickness": 6.35,
+ "kerf": 0.15
+}
