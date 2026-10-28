@@ -74,7 +74,8 @@ def main(args):
             geo = json.loads(PLATE_FILE.read_text())
             centres = []
             for name in ("A", "B"):
-                p = jog(rtde_help, "lower the cup into bore %s until it sits (no force), then Enter" % name,
+                p = jog(rtde_help, "bore %s (%s): lower the cup into it until it sits (no force), then Enter" % (
+                            name, "bolt side, far from the corner" if name == "A" else "next to the corner"),
                         z_floor=start_z - args.max_drop_mm / 1000.0)
                 centres.append(np.array(p[:2]))
                 print("bore %s: x %.2f y %.2f mm" % (name, p[0] * 1000, p[1] * 1000))
@@ -93,6 +94,11 @@ def main(args):
                 dist, dist_nom, dist - dist_nom, axis, vertex[0] * 1000, vertex[1] * 1000))
             if abs(dist - dist_nom) > 0.5:
                 print("WARNING: bores A-B differ from the drawing by more than 0.5 mm; re-seat the cup and record again")
+            # A then B matters: the vertex is 40 mm past B on the A->B line. Swapped bores still give 85 mm, so ask.
+            answer = input("The vertex should be %.0f mm past B on the corner side (A = bolt side, B = corner side). "
+                           "Move there now? [y/N] " % np.linalg.norm(rel)).strip().lower()
+            if answer != "y":
+                raise KeyboardInterrupt
             here = list(rtde_help.rtde_r.getActualTCPPose())
             rtde_help.rtde_c.moveL(list(vertex) + here[2:], MOVE_SPEED / 2, MOVE_ACC)
             pose = jog(rtde_help, "above the vertex: only f / r (down / up) until the lip just touches; x, y must not change",
