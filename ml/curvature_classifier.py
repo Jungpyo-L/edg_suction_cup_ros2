@@ -28,6 +28,10 @@ the contact force as well. How the points are placed is the --representation:
 Accuracy is estimated leaving out one whole run at a time. Taps from one run
 share a session, a cup condition and a mounting, so splitting taps at random
 would test on near-copies of the training data and overstate the result.
+--test-size does exactly that, for a single run or a quick look:
+
+    python3 ml/curvature_classifier.py --speeds 0.010 --evaluate minirocket \
+        --test-size 0.3 --model minirocket --points 128
 """
 
 import argparse
@@ -337,6 +341,12 @@ def build_dataset(args):
         if run is None:
             report.append((path, None, 0, [], problem))
             continue
+        # Read from the run rather than its name, which does not record speed.
+        if args.speeds and not any(abs(run["tap_speed"] - speed) < 1e-6
+                                   for speed in args.speeds):
+            report.append((path, None, 0, [], "tap speed %.1f mm/s not in --speeds"
+                           % (run["tap_speed"] * 1e3)))
+            continue
         samples, skipped = extract_taps(run, args)
         runs.append((run, samples))
         surfaces = sorted({curvature_of(run, waypoint) for waypoint, _ in samples})
@@ -344,7 +354,9 @@ def build_dataset(args):
 
     # A channel has to exist in every run, or the arrays do not line up.
     has_z = bool(runs) and all("z" in run for run, _ in runs)
-    if runs and not has_z:
+    if args.no_indentation:
+        has_z = False
+    elif runs and not has_z:
         missing = [os.path.basename(run["path"]) for run, _ in runs if "z" not in run]
         print("Indentation dropped from every tap: %d run(s) have no "
               "/endEffectorPose logged, starting with %s"
@@ -403,31 +415,43 @@ def models(n_channels):
     }
 
 
-def evaluate(name, model, features, labels, groups, classes):
-    """Leave-one-run-out scores. `labels` and `classes` are class names, not
-    curvatures: a curvature like 1/0.030 is not a whole number, and a float
-    label makes scikit-learn read the target as a continuous quantity to be
-    regressed rather than a class to be recognised."""
+def evaluate(name, model, features, labels, groups, classes, test_size=None):
+    """Leave-one-run-out scores, or with `test_size` the scores on that
+    fraction of taps held out at random. `labels` and `classes` are class
+    names, not curvatures: a curvature like 1/0.030 is not a whole number, and
+    a float label makes scikit-learn read the target as a continuous quantity
+    to be regressed rather than a class to be recognised."""
     from sklearn.base import clone
     from sklearn.metrics import balanced_accuracy_score, confusion_matrix
-    from sklearn.model_selection import LeaveOneGroupOut
+    from sklearn.model_selection import LeaveOneGroupOut, train_test_split
 
-    predicted = np.empty_like(labels)
-    for train, test in LeaveOneGroupOut().split(features, labels, groups):
-        if len(np.unique(labels[train])) < 2:
-            # Holding this run out left a single class to train on, which
-            # some models refuse to fit. Predicting that class is all any of
-            # them could do.
-            predicted[test] = labels[train][0]
-            continue
+    if test_size:
+        # Stratified, so every class keeps its share in both halves, and
+        # seeded, so a rerun tests on the same taps.
+        train, test = train_test_split(np.arange(len(labels)), test_size=test_size,
+                                       stratify=labels, random_state=0)
         fitted = clone(model).fit(features[train], labels[train])
-        predicted[test] = fitted.predict(features[test])
+        labels, predicted = labels[test], fitted.predict(features[test])
+        how = "on a random %.0f%% of taps held out (%d train / %d test)" % (
+            test_size * 1e2, len(train), len(test))
+    else:
+        predicted = np.empty_like(labels)
+        for train, test in LeaveOneGroupOut().split(features, labels, groups):
+            if len(np.unique(labels[train])) < 2:
+                # Holding this run out left a single class to train on, which
+                # some models refuse to fit. Predicting that class is all any
+                # of them could do.
+                predicted[test] = labels[train][0]
+                continue
+            fitted = clone(model).fit(features[train], labels[train])
+            predicted[test] = fitted.predict(features[test])
+        how = "leaving one run out at a time"
 
     accuracy = float(np.mean(predicted == labels))
     balanced = float(balanced_accuracy_score(labels, predicted))
     print()
-    print("%s: accuracy %.1f%%, balanced accuracy %.1f%%, leaving one run out "
-          "at a time" % (name, accuracy * 1e2, balanced * 1e2))
+    print("%s: accuracy %.1f%%, balanced accuracy %.1f%%, %s"
+          % (name, accuracy * 1e2, balanced * 1e2, how))
     matrix = confusion_matrix(labels, predicted, labels=classes)
     width = max(len(label) for label in classes) + 2
     print(" " * width + "predicted ->")
@@ -460,7 +484,10 @@ def main(args):
             thin.append(class_name(kappa))
     if len(classes) < 2:
         sys.exit("\nOnly one class - nothing to tell apart yet.")
-    if thin:
+    if not args.test_size and len(np.unique(groups)) < 2:
+        sys.exit("\nOnly one run, so there is no other run to test it on. Pass "
+                 "--test-size 0.3 to hold out taps at random instead.")
+    if thin and not args.test_size:
         print()
         print("!! %s: only one run, so with it held out there is no training "
               "example of that class left and every one of its taps is "
@@ -471,8 +498,9 @@ def main(args):
     targets = np.array([class_name(kappa) for kappa in y])
     names = [class_name(kappa) for kappa in classes]
     candidates = models(X.shape[1])
-    for name, model in candidates.items():
-        evaluate(name, model, features, targets, groups, names)
+    for name in args.evaluate or candidates:
+        evaluate(name, candidates[name], features, targets, groups, names,
+                 args.test_size)
 
     # Fitted on every tap for use on new data. Its accuracy is the
     # leave-one-run-out figure above, not anything measured on this fit.
@@ -545,5 +573,23 @@ if __name__ == "__main__":
                         "reads the shape of each curve and wants longer series "
                         "than the default --points 32 gives it room for; try "
                         "--points 128 alongside it")
+    parser.add_argument("--no-indentation", action="store_true",
+                        help="leave indentation out of every tap, so the force "
+                        "representation reads the chamber pressures alone. "
+                        "Indentation comes from the arm's height, so it can "
+                        "carry where on the bed a sphere sits as well as its "
+                        "curvature")
+    parser.add_argument("--speeds", type=float, nargs="*", default=[],
+                        help="use only runs tapped at these speeds (m/s), as "
+                        "each run recorded it, e.g. 0.010 0.0125")
+    parser.add_argument("--evaluate", nargs="*", default=[],
+                        choices=["logreg", "forest", "minirocket"],
+                        help="which models to score (default: all of them)")
+    parser.add_argument("--test-size", type=float, default=None,
+                        help="score on this fraction of taps held out at "
+                        "random, e.g. 0.3, instead of leaving one run out at "
+                        "a time. Taps from one run are near-copies of each "
+                        "other, so this reads higher than a held-out run. The "
+                        "saved model is fitted on every tap either way")
     parser.add_argument("--out", default="~/EDG_Experiment/ml")
     main(parser.parse_args())
