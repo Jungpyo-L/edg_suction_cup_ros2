@@ -17,8 +17,13 @@ on pressure only, the indentation logged here is simply not passed to it.
     ros2 run suction_cup predict_curvature.py --model ... --start 0.025 --truth 0.025 --taps 3
 
 --start begins the jog above a sphere's saved apex rather than wherever the arm
-is, which saves a long walk down from the parked pose. --truth only labels the
-saved file and reports right or wrong; it is never shown to the model.
+is, which saves a long walk down from the parked pose. --at skips the jog and
+taps that saved apex itself - the one the training runs were jogged onto:
+
+    ros2 run suction_cup predict_curvature.py --model ... --at 0.030 --taps 3
+
+--truth only labels the saved file and reports right or wrong; it is never
+shown to the model.
 
 Without a robot, classify a file that is already saved:
 
@@ -176,6 +181,8 @@ def tap_and_save(args):
         file_help.clearTmpFolder()
 
         here = np.array(rtde_help.rtde_r.getActualTCPPose()[:3])
+        if args.at is not None:
+            args.start = args.at
         if args.start == "here":
             start = here
         else:
@@ -189,10 +196,15 @@ def tap_and_save(args):
             rtde_help.goToPose(rtde_help.getPoseObj([here[0], here[1], high], upright))
             rtde_help.goToPose(rtde_help.getPoseObj([start[0], start[1], high], upright))
 
-        print()
-        print("Jog onto the point to tap - anywhere on the sphere - so the cup "
-              "just touches it, then press Enter.")
-        touch = sweep.jog_to_apex(rtde_help, start, upright, args)
+        if args.at is not None:
+            touch = np.asarray(start, dtype=float)
+            print("Tapping the saved apex of the %s m sphere, %s."
+                  % (sweep.apex_key(args.at), np.round(touch, 5)))
+        else:
+            print()
+            print("Jog onto the point to tap - anywhere on the sphere - so the "
+                  "cup just touches it, then press Enter.")
+            touch = sweep.jog_to_apex(rtde_help, start, upright, args)
         clear_z = touch[2] + args.clear_height
         args.touch_point = touch
 
@@ -297,6 +309,9 @@ if __name__ == "__main__":
     parser.add_argument("--start", default="here",
                         help="where the jog begins: 'here', or the radius (m) of "
                         "a sphere whose saved apex to start above, e.g. 0.025")
+    parser.add_argument("--at", type=float, default=None,
+                        help="tap the saved apex of the sphere of this radius "
+                        "(m) without jogging, e.g. 0.025")
     parser.add_argument("--ml-dir", default=None,
                         help="folder holding curvature_classifier.py, if it is "
                         "not found beside src/")
