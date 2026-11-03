@@ -23,6 +23,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   src/ESP32_Pressure.py
   src/ft_monitor.py
   src/predict_curvature.py
+  src/predict_at_points.py
   src/realsense_sphere_detector.py
   src/robotStatePublisher.py
   src/sphere_sweep_experiment.py
