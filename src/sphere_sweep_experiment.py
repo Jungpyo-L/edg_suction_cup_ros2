@@ -1004,11 +1004,13 @@ def _in_windows(line, windows):
 def trim_to_taps(file_names):
     """Cut this run's CSVs down to the tap windows, in place.
 
-    Each window runs from TRIM_LEAD before EVENT_DESCEND to EVENT_PRELOAD for
-    one waypoint: the still moment at hover while the sensor is biased, then
-    the descent, through to the stop and the listen after it that catches the
-    peak. The quiet lead-in and the approach are both kept - they are the
-    baseline every channel is measured against.
+    Each window runs from TRIM_LEAD before EVENT_DESCEND to EVENT_RETRACT_END
+    for one waypoint: the still moment at hover while the sensor is biased,
+    the descent, the stop and the listen after it that catches the peak, then
+    the rise back to hover. The quiet lead-in and the approach are both kept -
+    they are the baseline every channel is measured against - and the rise is
+    kept so the release can be studied apart from the press, split at
+    EVENT_PRELOAD.
 
     Cut after the fact rather than by switching the logger on and off per tap:
     each enable re-runs topic discovery, which can take seconds, and opens a
@@ -1048,7 +1050,7 @@ def trim_to_taps(file_names):
                 continue
             if event == EVENT_DESCEND:
                 starts.setdefault(waypoint, t - TRIM_LEAD)
-            elif event == EVENT_PRELOAD:
+            elif event == EVENT_RETRACT_END:
                 ends.setdefault(waypoint, t)
     windows = [(start, ends.get(waypoint, float("inf")))
                for waypoint, start in sorted(starts.items())]
@@ -1839,8 +1841,9 @@ if __name__ == "__main__":
                         help="tap mode: acceleration (m/s^2)")
     parser.add_argument("--log-tap-only", action="store_true",
                         help="tap mode: keep only the logged data from the start "
-                        "of each descent to the moment it stopped, dropping "
-                        "travel, bias and retract. The logger still records "
+                        "of each descent to the cup being back at hover - the "
+                        "press and the rise, split by the stop event - "
+                        "dropping travel and bias. The logger still records "
                         "the whole run; it is cut when the run is saved")
     parser.add_argument("--max-indent", type=float, default=0.006,
                         help="tap mode: stop if the cup goes this far past first "
