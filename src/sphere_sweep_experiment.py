@@ -189,6 +189,9 @@ def jog_to_apex(rtde_help, apex, orientation, args):
     height = args.hover_height if args.jog_height is None else args.jog_height
     target = start + np.array([0.0, 0.0, height])
     step = args.jog_step
+    # Shift moves by --jog-coarse, or by --jog-big once m switches it over, for
+    # crossing the bed between spheres that sit far apart.
+    big = False
 
     print()
     print("Jogging to the apex. The cup is %.0f mm above the starting estimate."
@@ -199,6 +202,8 @@ def jog_to_apex(rtde_help, apex, orientation, args):
     print("  [ ]  step down/up (now %.1f mm)" % (step * 1e3))
     print("  Shift + a move key  coarse step of %.0f mm - come down the last "
           "few mm in fine steps" % (args.jog_coarse * 1e3))
+    print("  m    switch Shift between %.0f mm and %.0f mm (up and sideways only)"
+          % (args.jog_coarse * 1e3, args.jog_big * 1e3))
     print("  <Enter> accept, x abort")
     print("Lateral moves happen at whatever height you are at, so lift before")
     print("crossing the sphere if you have come down onto it.")
@@ -231,13 +236,29 @@ def jog_to_apex(rtde_help, apex, orientation, args):
             step = min(0.010, step * 2.0)
             print("  step %.1f mm" % (step * 1e3))
             continue
+        if key == "m":
+            big = not big
+            print("  Shift step %.0f mm"
+                  % ((args.jog_big if big else args.jog_coarse) * 1e3))
+            continue
 
         direction = JOG_KEYS.get(key.lower())
         if direction is None:
             continue
 
-        moved = target + np.asarray(direction) * (
-            args.jog_coarse if key.isupper() else step)
+        if not key.isupper():
+            size = step
+        elif big:
+            # A big step down would drive the cup into whatever is below it.
+            if direction[2] < 0:
+                print("  no %.0f mm steps down; press m for %.0f mm steps or "
+                      "come down in fine ones" % (args.jog_big * 1e3,
+                                                  args.jog_coarse * 1e3))
+                continue
+            size = args.jog_big
+        else:
+            size = args.jog_coarse
+        moved = target + np.asarray(direction) * size
         # A jog may have to cross to another sphere, which --max-offset, the
         # limit on where a waypoint may sit, is far too tight for.
         limit = args.max_offset if args.jog_range is None else args.jog_range
@@ -1875,6 +1896,10 @@ if __name__ == "__main__":
     parser.add_argument("--jog-coarse", type=float, default=0.010,
                         help="jog increment (m) when a move key is pressed with "
                         "Shift, for crossing to a sphere quickly")
+    parser.add_argument("--jog-big", type=float, default=0.100,
+                        help="jog increment (m) for Shift + a move key after m "
+                        "switches the jog to big steps, for crossing the bed. "
+                        "Only up and sideways; downward big steps are refused")
     parser.add_argument("--jog-height", type=float, default=None,
                         help="height above the starting apex estimate that the "
                         "jog opens at (m). Defaults to --hover-height. Give it "
