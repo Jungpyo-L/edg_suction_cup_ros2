@@ -187,7 +187,13 @@ def jog_to_apex(rtde_help, apex, orientation, args):
     # a safe jog start forces a needlessly high hover, and a hover of zero
     # would drive the cup onto the unverified guess as the jog opens.
     height = args.hover_height if args.jog_height is None else args.jog_height
-    target = start + np.array([0.0, 0.0, height])
+    # The opening move never goes down. The saved or vision apex may be stale -
+    # a sphere moved since, or a different one in its place - so descending onto
+    # it drives the cup into whatever is there now. Lift first if needed, cross
+    # at that height, and leave every downward move to the keys.
+    here = rtde_help.rtde_r.getActualTCPPose()
+    open_z = max(here[2], start[2] + height)
+    target = np.array([start[0], start[1], open_z])
     step = args.jog_step
     # Shift moves by --jog-coarse, or by --jog-big once m switches it over, for
     # crossing the bed between spheres that sit far apart.
@@ -195,7 +201,7 @@ def jog_to_apex(rtde_help, apex, orientation, args):
 
     print()
     print("Jogging to the apex. The cup is %.0f mm above the starting estimate."
-          % (height * 1e3))
+          % ((open_z - start[2]) * 1e3))
     print("Drive the cup down until it just touches the top of the sphere, then")
     print("press Enter. All three axes are read from the arm at that moment.")
     print("  w/s  +x/-x     a/d  +y/-y     r/f  +z/-z")
@@ -208,6 +214,7 @@ def jog_to_apex(rtde_help, apex, orientation, args):
     print("Lateral moves happen at whatever height you are at, so lift before")
     print("crossing the sphere if you have come down onto it.")
 
+    rtde_help.goToPose(rtde_help.getPoseObj([here[0], here[1], open_z], orientation))
     rtde_help.goToPose(rtde_help.getPoseObj(list(target), orientation))
 
     while True:
@@ -551,7 +558,12 @@ def resolve_sphere_apexes(radii, rtde_help, args, orientation, travel_height):
             print("Sphere %s m: nothing saved yet, so the jog starts from where "
                   "the arm is now." % apex_key(radius))
         here = rtde_help.rtde_r.getActualTCPPose()
-        safe_z = max([here[2], start[2]] + [a[2] for a in apexes]) + travel_height
+        # Cross above every sphere, including ones not jogged yet: moving a
+        # sphere on the bed keeps its height, so its saved apex still says how
+        # tall it is even if it no longer says where it is.
+        heights = [here[2], start[2]] + [a[2] for a in apexes]
+        heights += [s[2] for s in (stored_apex(r) for r in radii) if s is not None]
+        safe_z = max(heights) + travel_height
         rtde_help.goToPose(rtde_help.getPoseObj([here[0], here[1], safe_z], orientation))
         rtde_help.goToPose(rtde_help.getPoseObj([start[0], start[1], safe_z], orientation))
 
