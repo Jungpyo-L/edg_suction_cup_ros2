@@ -202,7 +202,7 @@ def jog_to_apex(rtde_help, apex, orientation, args):
     print("  [ ]  step down/up (now %.1f mm)" % (step * 1e3))
     print("  Shift + a move key  coarse step of %.0f mm - come down the last "
           "few mm in fine steps" % (args.jog_coarse * 1e3))
-    print("  m    switch Shift between %.0f mm and %.0f mm (up and sideways only)"
+    print("  m    switch Shift between %.0f mm and %.0f mm"
           % (args.jog_coarse * 1e3, args.jog_big * 1e3))
     print("  <Enter> accept, x abort")
     print("Lateral moves happen at whatever height you are at, so lift before")
@@ -249,12 +249,6 @@ def jog_to_apex(rtde_help, apex, orientation, args):
         if not key.isupper():
             size = step
         elif big:
-            # A big step down would drive the cup into whatever is below it.
-            if direction[2] < 0:
-                print("  no %.0f mm steps down; press m for %.0f mm steps or "
-                      "come down in fine ones" % (args.jog_big * 1e3,
-                                                  args.jog_coarse * 1e3))
-                continue
             size = args.jog_big
         else:
             size = args.jog_coarse
@@ -1898,8 +1892,7 @@ if __name__ == "__main__":
                         "Shift, for crossing to a sphere quickly")
     parser.add_argument("--jog-big", type=float, default=0.100,
                         help="jog increment (m) for Shift + a move key after m "
-                        "switches the jog to big steps, for crossing the bed. "
-                        "Only up and sideways; downward big steps are refused")
+                        "switches the jog to big steps, for crossing the bed")
     parser.add_argument("--jog-height", type=float, default=None,
                         help="height above the starting apex estimate that the "
                         "jog opens at (m). Defaults to --hover-height. Give it "
