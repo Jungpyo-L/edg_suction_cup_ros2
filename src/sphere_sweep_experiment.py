@@ -13,7 +13,7 @@ import signal
 import sys
 import threading
 import time
-from collections import deque
+from collections import deque, namedtuple
 
 import numpy as np
 import rclpy
@@ -59,6 +59,41 @@ def apex_key(radius):
     return "%.4f" % float(radius)
 
 
+# A flat panel (radius 0 in --spheres) is jogged at five places rather than
+# one: its middle, then the centre of each of the four holes near its edges.
+# The middle keeps the plain radius-0 key, so a flat apex saved before this
+# still loads.
+FLAT_HOLES = 4
+
+# One place a --spheres run jogs and taps around. `site` is 0 for a sphere or
+# the panel's middle and the hole number for a hole, and lands in tap_plan.
+Surface = namedtuple("Surface", "radius key name label site jitter")
+
+
+def surfaces(radii, args):
+    """Every place a --spheres run jogs and taps: one per sphere, five for the
+    flat panel."""
+    out = []
+    for radius in radii:
+        if radius > 0.0:
+            out.append(Surface(radius, apex_key(radius),
+                               "%s m sphere" % apex_key(radius),
+                               "R%s" % apex_key(radius), 0,
+                               sphere_jitter(radius, args)))
+            continue
+        out.append(Surface(0.0, apex_key(0.0), "flat panel middle", "flat",
+                           0, args.center_jitter))
+        for hole in range(1, FLAT_HOLES + 1):
+            out.append(Surface(0.0, "%s_hole%d" % (apex_key(0.0), hole),
+                               "flat panel hole %d" % hole, "hole%d" % hole,
+                               hole, args.hole_jitter))
+    return out
+
+
+def surface_count(radii):
+    return sum(1 if radius > 0.0 else 1 + FLAT_HOLES for radius in radii)
+
+
 def load_apex_store():
     try:
         with open(APEX_STORE) as handle:
@@ -80,21 +115,23 @@ def write_apex_offset(offset):
         print("Could not save the offset (%s). Pass it by hand next time." % exc)
 
 
-def write_apex(radius, apex):
-    """Record the accepted apex under its sphere radius.
+def write_apex(radius, apex, key=None):
+    """Record the accepted apex under its sphere radius, or under `key` for
+    one of the flat panel's holes.
 
     Read-modify-write rather than overwrite, so saving the 20 mm sphere does
     not discard the 25 mm one.
     """
+    key = apex_key(radius) if key is None else key
     try:
         stored = load_apex_store()
-        stored[apex_key(radius)] = [round(float(v), 6) for v in apex]
+        stored[key] = [round(float(v), 6) for v in apex]
         os.makedirs(os.path.dirname(APEX_STORE), exist_ok=True)
         with open(APEX_STORE, "w") as handle:
             json.dump(stored, handle, indent=2, sort_keys=True)
             handle.write(chr(10))
-        print("Apex saved for radius %s m in %s. Reuse it with --apex last."
-              % (apex_key(radius), APEX_STORE))
+        print("Apex saved under %s in %s. Reuse it with --apex last."
+              % (key, APEX_STORE))
     except (OSError, TypeError, ValueError) as exc:
         print("Could not save the apex (%s). Copy it by hand." % exc)
 
@@ -492,7 +529,12 @@ def stored_apex(radius):
     there are four: it would hand the same point to a sphere that has never
     been jogged.
     """
-    entry = load_apex_store().get(apex_key(radius))
+    return stored_point(apex_key(radius))
+
+
+def stored_point(key):
+    """The saved point under this store key, or None."""
+    entry = load_apex_store().get(key)
     return None if entry is None else np.asarray(entry, dtype=float)
 
 
@@ -526,8 +568,9 @@ def sphere_jitter(radius, args):
     return radius * args.jitter_fraction
 
 
-def resolve_sphere_apexes(radii, rtde_help, args, orientation, travel_height):
-    """One apex per sphere, jogged now or loaded from the store.
+def resolve_sphere_apexes(surfs, rtde_help, args, orientation, travel_height):
+    """One apex per sphere, and five points on the flat panel, jogged now or
+    loaded from the store.
 
     Every jog happens before any tapping, so one person at the keyboard sets
     all the spheres up and the rest of the run is unattended.
@@ -538,16 +581,16 @@ def resolve_sphere_apexes(radii, rtde_help, args, orientation, travel_height):
     whatever stands between them.
     """
     apexes = []
-    for radius in radii:
-        stored = stored_apex(radius)
+    for surf in surfs:
+        stored = stored_point(surf.key)
 
         if not args.jog_apex:
             if stored is None:
                 raise RuntimeError(
-                    "No apex saved for the %s m sphere in %s. Run once with "
-                    "--jog-apex to set them." % (apex_key(radius), APEX_STORE))
-            print("Sphere %s m: using the saved apex %s"
-                  % (apex_key(radius), np.round(stored, 5)))
+                    "Nothing saved for the %s in %s. Run once with "
+                    "--jog-apex to set it." % (surf.name, APEX_STORE))
+            print("%s: using the saved point %s"
+                  % (surf.name, np.round(stored, 5)))
             apexes.append(stored)
             continue
 
@@ -555,28 +598,33 @@ def resolve_sphere_apexes(radii, rtde_help, args, orientation, travel_height):
         if start is None:
             pose = rtde_help.rtde_r.getActualTCPPose()
             start = np.array([pose[0], pose[1], pose[2]])
-            print("Sphere %s m: nothing saved yet, so the jog starts from where "
-                  "the arm is now." % apex_key(radius))
+            print("%s: nothing saved yet, so the jog starts from where "
+                  "the arm is now." % surf.name)
         here = rtde_help.rtde_r.getActualTCPPose()
         # Cross above every sphere, including ones not jogged yet: moving a
         # sphere on the bed keeps its height, so its saved apex still says how
         # tall it is even if it no longer says where it is.
         heights = [here[2], start[2]] + [a[2] for a in apexes]
-        heights += [s[2] for s in (stored_apex(r) for r in radii) if s is not None]
+        heights += [p[2] for p in (stored_point(t.key) for t in surfs)
+                    if p is not None]
         safe_z = max(heights) + travel_height
         rtde_help.goToPose(rtde_help.getPoseObj([here[0], here[1], safe_z], orientation))
         rtde_help.goToPose(rtde_help.getPoseObj([start[0], start[1], safe_z], orientation))
 
         print()
-        print("=== Jog to the apex of the %s m sphere (%d of %d) ==="
-              % (apex_key(radius), len(apexes) + 1, len(radii)))
+        print("=== Jog to the %s (%d of %d) ==="
+              % (surf.name, len(apexes) + 1, len(surfs)))
+        if surf.radius <= 0.0:
+            print("Put the cup's centre over %s, then lower it onto the panel."
+                  % ("the middle of the panel, clear of the holes"
+                     if surf.site == 0 else "the centre of hole %d" % surf.site))
         apex = jog_to_apex(rtde_help, start, orientation, args)
-        write_apex(radius, np.asarray(apex, dtype=float))
+        write_apex(surf.radius, np.asarray(apex, dtype=float), surf.key)
         apexes.append(np.asarray(apex, dtype=float))
     return apexes
 
 
-def multi_sphere_plan(radii, apexes, yaws, args):
+def multi_sphere_plan(surfs, apexes, yaws, args):
     """Waypoints for every sphere, interleaved point by point.
 
     Each sphere gets its own scattered points, and the run visits the first
@@ -585,20 +633,23 @@ def multi_sphere_plan(radii, apexes, yaws, args):
     anything that drifts - the lip taking a set, the vacuum, the room - then
     lands on all four curvatures equally instead of on whichever sphere was
     mounted at the time, where it would look like a property of that sphere.
+
+    The flat panel's middle and its four holes are surfaces of their own here,
+    each scattered within its own jitter, so every round taps all five.
     """
     rng = np.random.default_rng(args.seed)
     per_sphere = []
-    for index, (radius, apex) in enumerate(zip(radii, apexes)):
-        jitter = sphere_jitter(radius, args)
+    for index, (surf, apex) in enumerate(zip(surfs, apexes)):
         _, offsets, plan_yaws = sampling_plan(
-            args.repeat, jitter, yaws, args.seed + index, args.yaw_jitter,
+            args.repeat, surf.jitter, yaws, args.seed + index, args.yaw_jitter,
             args.yaw_span, shuffle=False, yaw_start=args.yaw_start)
-        per_sphere.append((radius, np.asarray(apex, dtype=float), offsets,
-                           plan_yaws, jitter))
+        per_sphere.append((surf, np.asarray(apex, dtype=float), offsets,
+                           plan_yaws))
 
     labels, waypoints, yaw_plan, tap_radius, plan_rows = [], [], [], [], []
     for point in range(args.repeat):
-        for radius, apex, offsets, plan_yaws, _ in per_sphere:
+        for surf, apex, offsets, plan_yaws in per_sphere:
+            radius = surf.radius
             first = point * len(yaws)
             for step in rng.permutation(len(yaws)):
                 index = first + int(step)
@@ -607,16 +658,16 @@ def multi_sphere_plan(radii, apexes, yaws, args):
                 touch = apex + np.array([dx, dy, -surface_drop(radius, dx, dy)])
                 if np.linalg.norm(touch - apex) > args.max_offset + 1e-9:
                     raise ValueError(
-                        "A point on the %s m sphere is %.3f m from its apex, "
+                        "A point on the %s is %.3f m from its jogged point, "
                         "beyond --max-offset %.3f m."
-                        % (apex_key(radius), np.linalg.norm(touch - apex),
+                        % (surf.name, np.linalg.norm(touch - apex),
                            args.max_offset))
-                labels.append("R%s p%d" % (apex_key(radius), point + 1))
+                labels.append("%s p%d" % (surf.label, point + 1))
                 waypoints.append(touch)
                 yaw_plan.append(yaw)
                 tap_radius.append(radius)
-                plan_rows.append([dx, dy, yaw])
-    jitters = [(radius, jitter) for radius, _, _, _, jitter in per_sphere]
+                plan_rows.append([dx, dy, yaw, surf.site])
+    jitters = [(surf.name, surf.jitter) for surf in surfs]
     return labels, waypoints, yaw_plan, tap_radius, np.array(plan_rows), jitters
 
 
@@ -1200,6 +1251,14 @@ def validate_args(args):
                 "which offset mode would then touch instead of holding "
                 "--standoff above. Use --mode tap or force.")
         radii = parse_radii(args.spheres)
+        if any(radius <= 0.0 for radius in radii):
+            if args.center_jitter is None or args.center_jitter <= 0.0:
+                raise ValueError(
+                    "The flat panel (0 in --spheres) needs --center-jitter: how "
+                    "far from its middle the taps may land, clear of the holes.")
+            if args.hole_jitter <= 0.0:
+                raise ValueError("--hole-jitter must be positive, got %s"
+                                 % args.hole_jitter)
         for radius in radii:
             # Checked here rather than when the plan is built, so a bad width
             # is refused before anyone has jogged four spheres.
@@ -1208,7 +1267,7 @@ def validate_args(args):
                     "Points on the %s m sphere would reach %.4f m from its "
                     "apex, at or beyond its radius - there is no surface there."
                     % (apex_key(radius), sphere_jitter(radius, args)))
-        count = args.repeat * args.yaws * len(radii)
+        count = args.repeat * args.yaws * surface_count(radii)
     elif args.repeat > 0:
         count = args.repeat * args.yaws
     else:
@@ -1271,7 +1330,13 @@ def plan_offsets(args):
               "in all, interleaved sphere by sphere, seed %d."
               % ("/".join(apex_key(r) for r in spheres), args.repeat,
                  "/".join("%.0f" % y for y in yaws), args.yaw_jitter,
-                 args.repeat * args.yaws * len(spheres), args.seed))
+                 args.repeat * args.yaws * surface_count(spheres), args.seed))
+        if any(r <= 0.0 for r in spheres):
+            print("Flat panel: its middle and each of its %d holes get %d points "
+                  "of their own - within %.1f mm of the middle and %.1f mm of "
+                  "each hole centre." % (FLAT_HOLES, args.repeat,
+                                         args.center_jitter * 1e3,
+                                         args.hole_jitter * 1e3))
     elif args.repeat > 0:
         yaws = yaw_grid(args)
         jitter = sphere_jitter(args.radius, args)
@@ -1556,30 +1621,33 @@ def main(args):
             file_help.clearTmpFolder()
 
         if spheres is not None:
+            surfs = surfaces(spheres, args)
             if args.dry_run:
                 apexes = []
-                for radius in spheres:
-                    saved = stored_apex(radius)
+                for surf in surfs:
+                    saved = stored_point(surf.key)
                     if saved is None:
                         raise RuntimeError(
-                            "No apex saved for the %s m sphere in %s, and a dry "
-                            "run cannot jog for one."
-                            % (apex_key(radius), APEX_STORE))
-                    print("Sphere %s m: saved apex %s"
-                          % (apex_key(radius), np.round(saved, 5)))
+                            "Nothing saved for the %s in %s, and a dry run "
+                            "cannot jog for it." % (surf.name, APEX_STORE))
+                    print("%s: saved point %s" % (surf.name, np.round(saved, 5)))
                     apexes.append(saved)
             else:
-                apexes = resolve_sphere_apexes(spheres, rtde_help, args,
+                apexes = resolve_sphere_apexes(surfs, rtde_help, args,
                                                orientation_fixed,
                                                args.travel_height)
             (labels, sphere_waypoints, yaw_plan, tap_radius, args.tap_plan,
-             jitters) = multi_sphere_plan(spheres, apexes, yaws, args)
+             jitters) = multi_sphere_plan(surfs, apexes, yaws, args)
             args.tap_radius = np.array(tap_radius)
             args.apex_used = np.array(apexes)
+            # Row n of apex_used is the point jogged for surface_names[n].
+            args.surface_names = [surf.name for surf in surfs]
+            args.tap_plan_columns = ("dx, dy, yaw, site (0 for a sphere or the "
+                                     "panel middle, n for hole n)")
             args.apex_source = apex_frame = "manual"
-            for radius, jitter in jitters:
-                print("  %s m sphere: points within %.1f mm of its apex"
-                      % (apex_key(radius), jitter * 1e3))
+            for name, jitter in jitters:
+                print("  %s: points within %.1f mm of its jogged point"
+                      % (name, jitter * 1e3))
         else:
             apex, apex_frame = resolve_single_apex(args, apex_listener,
                                                    rtde_help, orientation_fixed)
@@ -1614,9 +1682,9 @@ def main(args):
             # One plane over the tallest sphere: every lateral move crosses all
             # of them, so clearing only the one being tapped is not enough.
             travel_z = max(a[2] for a in apexes) + args.travel_height
-            print("Travel plane at z=%.5f (%.1f mm above the highest apex of "
-                  "the %d spheres)." % (travel_z, args.travel_height * 1e3,
-                                        len(apexes)))
+            print("Travel plane at z=%.5f (%.1f mm above the highest of the "
+                  "%d jogged points)." % (travel_z, args.travel_height * 1e3,
+                                          len(apexes)))
             here = rtde_help.rtde_r.getActualTCPPose()
             rtde_help.goToPose(rtde_help.getPoseObj(
                 [here[0], here[1], travel_z], orientation_fixed))
@@ -1923,7 +1991,16 @@ if __name__ == "__main__":
                         "Each is jogged at the start and remembered under its "
                         "own radius; the run then taps them interleaved, a "
                         "point at a time, until every sphere is done. Needs "
-                        "--repeat; --radius and --offsets are ignored")
+                        "--repeat; --radius and --offsets are ignored. A 0 is "
+                        "the flat panel, jogged at its middle and then at each "
+                        "of its 4 holes; needs --center-jitter")
+    parser.add_argument("--center-jitter", type=float, default=None,
+                        help="flat panel: furthest a tap may land from the "
+                        "panel's middle (m). Keep it clear of the holes")
+    parser.add_argument("--hole-jitter", type=float, default=0.007,
+                        help="flat panel: furthest a tap may land from a hole's "
+                        "centre (m). Give the hole-centre-to-edge distance, so "
+                        "the cup's centre never passes the edge")
     parser.add_argument("--jitter-fraction", type=float, default=1.0 / 3.0,
                         help="how far from each sphere's apex its points may "
                         "sit, as a fraction of that sphere's radius, when "
