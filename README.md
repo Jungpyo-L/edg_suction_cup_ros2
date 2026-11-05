@@ -335,6 +335,9 @@ ros2 bag record /SensorPacket /SensorCallback /endEffectorPose /netft_data /sync
 
 ## Example Nodes
 
+For tap data collection (sphere bed, flat panel), jogging, live prediction
+and training, see [docs/tap_runbook.md](docs/tap_runbook.md).
+
 Basic UR10 examples:
 
 ```bash

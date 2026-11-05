@@ -104,6 +104,9 @@ needs `arguments=["--ch", "3"]`. The hardware has 3 chambers; the code defaults 
 
 ## Experiments
 
+For tap data collection (sphere bed, flat panel), jogging, live prediction
+and training, see [docs/tap_runbook.md](docs/tap_runbook.md).
+
 ```bash
 # vision-guided, needs T1-T4
 ros2 run suction_cup sphere_sweep_experiment.py --dry-run     # always first
