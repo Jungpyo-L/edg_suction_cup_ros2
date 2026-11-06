@@ -251,6 +251,8 @@ The saved model is fitted on every tap; the score printed is from the split.
 | `1102_212100` | 4-ch | R20/25/30/40 | 15 mm/s | first positions, yaw start -15 |
 | `1103_175008` | 4-ch | R20/25/30/40 | 15 mm/s | spheres moved, yaw start -12 |
 | `1103_181400` | 4-ch | R20/25/30/40 | 10 mm/s | spheres moved, yaw start -12 |
+| `1105_??????` | 4-ch | flat panel only (middle + 4 holes) | 10 mm/s | 300 taps; file name to fill in |
+| `1105_??????` | 4-ch | flat panel only (middle + 4 holes) | 15 mm/s | 300 taps; file name to fill in |
 
 Still to do: 12.5 mm/s with the spheres moved.
 
