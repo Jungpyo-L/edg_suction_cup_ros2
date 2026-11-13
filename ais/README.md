@@ -23,9 +23,24 @@ Old ROS1 reference (read-only clone): `~/projects/ref/edg_suction_cup_ros1` (Git
 - ur_rtde 1.6.5: `python3 -m pip install --user --break-system-packages ur_rtde` (system Python 3.12, the one ROS2 jazzy uses).
 - The `suctionRL` conda env is Python 3.10 and cannot import `rclpy`. It is used only for exporting and checking policies.
 
+## Update 2026-11-13: v3 policies and static-pressure records
+
+- The simulator's pressure model was refitted (v3, `fit_v3_pmax64k`) and PPO retrained. Robot policies by the same
+  pre-set rule (median seed on the legacy dev set): **3ch `s2_ch3_s4`, 6ch `s2_ch6_s4`** from
+  `outputs/v3_train_20261109` -> `policies/ppo_ch{3,6}_v3_*.npz`. `trial_schedule.csv` regenerated (only the policy
+  column changed; fixture files byte-identical). Observation and action definitions are unchanged.
+- Simulation reference: `outputs/v3_robot_as_built_sim` (3ch greedy 67 / yaw-momentum 81 / PPO 94 %, 6ch 73 / 78 / 100 %).
+- All tests rerun against v3 and pass (parity, robot frame, loop timing, runner loop 599/600 exact seal ticks, wrist,
+  chamber check). The runner-loop test now starts from the simulator's unrounded start poses: the schedule rounds to
+  1e-4 mm, and that 7e-5 mm once moved a 6ch greedy seal by one tick.
+- Static pressure for the pressure-model parity plot (main-session request 2026-10-22): each trial summary has
+  `static_start` (still, vacuum on, before the controller; last 0.5 s of `--settle_s`) and `static_end` (1 s hold after
+  every trial end, sealed or not): mean / std of the 7-point-average chamber vacuum in simulator order, and the cup pose
+  in the object frame (x, y mm, yaw deg).
+
 ## Controller set (decided 2026-10-21)
 
-3ch and 6ch cups, each with PPO (`s2_ch3_s5` / `s2_ch6_s1`), greedy, yaw–momentum: 600 trials (2 cups x 3 controllers x 100 starts).
+3ch and 6ch cups, each with PPO (2026-10: `s2_ch3_s5` / `s2_ch6_s1`; replaced by the v3 seeds above), greedy, yaw–momentum: 600 trials (2 cups x 3 controllers x 100 starts).
 yaw and SAC were dropped; greedy was added (it is the earlier controller and gives a three-level ranking in simulation).
 The schedule was regenerated with the same seed (only `trial_schedule.csv` changed; fixture files are byte-identical).
 As-built simulation of the same 100 starts: PPO 94/94 %, yaw–momentum 82/78 %, greedy 67/73 % (3ch/6ch).

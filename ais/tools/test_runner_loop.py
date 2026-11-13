@@ -8,7 +8,7 @@ simulator (FinalEnvV2, as-built polygons, same noise seeds). The fake sensor ret
 scrambled channel order, negative, through a random cup-to-tool yaw offset and a rotated fixture calibration.
 The simulator physics keeps running after the geometric seal (no episode end), like the robot.
 Pass (run with no pressure stop): if every frame conversion is right, the geometric seal happens at exactly the tick
-stored in outputs/robot_as_built_sim/episodes.json. Also reported for the default 0.8 P_max stop: success against the
+stored in outputs/v3_robot_as_built_sim/episodes.json. Also reported for the default 0.8 P_max stop: success against the
 simulator's geometric seal, and how many ticks earlier the pressure stop fires.
 """
 import importlib.util
@@ -27,7 +27,7 @@ from ais_haptic import robot_frame as rf  # noqa: E402
 spec = importlib.util.spec_from_file_location('runner', PACKAGE / 'nodes' / 'ais_trial_runner.py')
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
-runner.HOLD_AFTER_SEAL_S = runner.RELEASE_WAIT_S = 0.0
+runner.HOLD_AFTER_STOP_S = runner.RELEASE_WAIT_S = 0.0
 LONG_EPISODE_TICKS = 300
 runner.time.sleep = lambda s: None
 
@@ -144,6 +144,9 @@ def run(ch, controller, seed, seal_frac, save=None):
     out = []
     for row in rows:
         c = cases[row['case_id']]
+        # the schedule rounds start poses to 1e-4 mm; start from the simulator's exact values so that this test checks
+        # the frame chain only (a 7e-5 mm start difference once moved a 6ch greedy seal by one tick)
+        row = dict(row, start_x_object=repr(c['center'][0]), start_y_object=repr(c['center'][1]), start_yaw_deg=repr(c['yaw']))
         env = FinalEnvV2(chambers=ch, variant='mlp_h5s5_log', pressure_model='v2', shaping='log')
         env.objects = dict(env.objects)
         poly = json.loads((Path('data/robot_as_built_K10/objects') / f"{c['object_id']}.json").read_text())['polygon']
@@ -156,6 +159,10 @@ def run(ch, controller, seed, seal_frac, save=None):
         summary, arrays = runner.run_trial(args, cup, plan, ur, FakeIO(env, cup), ctrl)
         if save:
             runner.save_trial(Path(save), row, summary, arrays, args, policy_path)
+        st = summary['static_start']        # the static record must report the schedule's start pose in the object frame
+        err = max(abs(st['x_obj_mm'] - float(row['start_x_object'])), abs(st['y_obj_mm'] - float(row['start_y_object'])),
+                  abs(float(rf.wrap_deg(st['yaw_obj_deg'] - float(row['start_yaw_deg'])))))
+        assert err < 1e-3, ('static_start pose', row['trial'], err)
         out.append(dict(case_id=row['case_id'], success=summary['success'], reason=summary['reason'],
                         ticks=summary['ticks'], first_seal=ur.first_seal))
     return cup, out
@@ -171,7 +178,7 @@ def job(spec):
 def main():
     from concurrent.futures import ProcessPoolExecutor
     ref = {(r['controller'], r['chambers'], r['case_id']): r
-           for r in json.loads(Path('outputs/robot_as_built_sim/episodes.json').read_text())}
+           for r in json.loads(Path('outputs/v3_robot_as_built_sim/episodes.json').read_text())}
     save = None
     if '--save' in sys.argv:       # keep the 0.8 P_max trials in the runner's format (ais_replay_video.py reads them)
         save = str(Path(sys.argv[sys.argv.index('--save') + 1]).expanduser())

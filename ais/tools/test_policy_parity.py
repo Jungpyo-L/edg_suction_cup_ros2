@@ -9,7 +9,7 @@ but every action comes from ais_haptic.policy. At each tick it compares
   - policies: our observation with the env observation, and our action with limit(model.predict(obs));
   - heuristics: our action (fed yaw + a constant offset) with the ContinuousHeuristic conversion of the script.
 The robot-side integrator (robot_frame.BodyCommandIntegrator) must track the simulator cup position and yaw.
-Each episode's success must equal outputs/robot_as_built_sim/episodes.json. Episode length is only reported:
+Each episode's success must equal outputs/v3_robot_as_built_sim/episodes.json. Episode length is only reported:
 float32 rounding (~1e-6 per action) can shift a long episode's seal by a tick or two (seen once, PPO 3ch, 480 vs 481).
 """
 import json
@@ -25,12 +25,11 @@ sys.path.insert(0, str(Path.cwd()))
 from ais_haptic import policy as hp  # noqa: E402
 from ais_haptic import robot_frame as rf  # noqa: E402
 
-POLICIES = {('ppo', 3): ('ppo_ch3_s2_ch3_s5', 'outputs/v2_s234_20261019/runs/s2_ch3_s5/final.zip'),
-            ('ppo', 6): ('ppo_ch6_s2_ch6_s1', 'outputs/v2_s234_20261019/runs/s2_ch6_s1/final.zip'),
-            ('sac', 3): ('sac_ch3_ch3_sac_log_s3', 'outputs/v2_s1_confirm_20261019/runs/ch3_sac_log_s3/final.zip')}
+POLICIES = {('ppo', 3): ('ppo_ch3_v3_s2_ch3_s4', 'outputs/v3_train_20261109/runs/s2_ch3_s4/final.zip'),
+            ('ppo', 6): ('ppo_ch6_v3_s2_ch6_s4', 'outputs/v3_train_20261109/runs/s2_ch6_s4/final.zip')}
 # robot controllers (PPO, greedy, yaw-momentum) first; the rest stay as extra checks of the same code
 JOBS = [(c, ch) for ch in (3, 6) for c in ('ppo', 'greedy', 'yaw_momentum')] + \
-       [('yaw', 3), ('momentum', 3), ('sac', 3), ('yaw', 6)]
+       [('yaw', 3), ('momentum', 3), ('yaw', 6)]
 YAW_OFFSET_DEG = 37.  # heuristics must not depend on the absolute yaw reference
 OBS_TOL, ACT_TOL = 1e-6, 5e-5  # float32 forward pass vs torch
 POSE_TOL_MM = 1e-6
@@ -90,7 +89,7 @@ def run(job):
 
 def main():
     ref = {(r['controller'], r['chambers'], r['case_id']): r
-           for r in json.loads(Path('outputs/robot_as_built_sim/episodes.json').read_text())}
+           for r in json.loads(Path('outputs/v3_robot_as_built_sim/episodes.json').read_text())}
     ok = True
     with ProcessPoolExecutor(max_workers=len(JOBS)) as pool:
         for job, (rows, wo, wa, wp) in zip(JOBS, pool.map(run, JOBS)):

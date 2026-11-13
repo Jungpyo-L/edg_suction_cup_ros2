@@ -3,7 +3,7 @@
 
 Run in the suctionRL conda env (torch + SB3), e.g.
   ~/miniconda3/envs/suctionRL/bin/python ais/tools/export_policy_npz.py --all
---all exports the three robot-experiment policies listed in ROBOT_POLICIES (paths in 2D_Haptic_Search/outputs).
+--all exports the robot-experiment policies listed in ROBOT_POLICIES (paths in 2D_Haptic_Search/outputs).
 """
 import argparse
 import hashlib
@@ -13,10 +13,10 @@ import numpy as np
 
 REPO = Path('~/projects/2D_Haptic_Search').expanduser()
 PACKAGE = Path(__file__).resolve().parents[1]   # ais/
+# v3 pressure-model refit (2026-11-09); robot seeds by the pre-set rule (median on the legacy dev set)
 ROBOT_POLICIES = {
-    'ppo_ch3_s2_ch3_s5': ('ppo', 'outputs/v2_s234_20261019/runs/s2_ch3_s5/final.zip'),
-    'ppo_ch6_s2_ch6_s1': ('ppo', 'outputs/v2_s234_20261019/runs/s2_ch6_s1/final.zip'),
-    'sac_ch3_ch3_sac_log_s3': ('sac', 'outputs/v2_s1_confirm_20261019/runs/ch3_sac_log_s3/final.zip'),
+    'ppo_ch3_v3_s2_ch3_s4': ('ppo', 'outputs/v3_train_20261109/runs/s2_ch3_s4/final.zip'),
+    'ppo_ch6_v3_s2_ch6_s4': ('ppo', 'outputs/v3_train_20261109/runs/s2_ch6_s4/final.zip'),
 }
 
 

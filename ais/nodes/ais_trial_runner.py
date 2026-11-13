@@ -10,7 +10,10 @@
 # Per trial: lift to the travel height, moveJ above the start with wrist 3 unwound (ais_haptic.motion) ->
 # hover above the start (tool yaw from the simulator start yaw) -> zero sensors in air -> descend to the
 # contact height minus press_mm -> vacuum on, settle -> 50 Hz loop (controller -> servoL) until every chamber reaches
-# seal_frac * P_max (then hold 1 s), 10 s, the 30 mm object boundary, or a tracking fault -> vacuum off -> lift.
+# seal_frac * P_max, 10 s, the 30 mm object boundary, or a tracking fault -> hold 1 s -> vacuum off -> lift.
+# Static pressure for the pressure-model parity plot: mean/std of the chamber vacuum over the last 0.5 s of the still
+# period before the controller starts and of the hold after it stops, with the cup pose in the object frame
+# (summary keys static_start / static_end).
 # Matches the simulator: 10 mm/s, 10 deg/s, body-frame actions (ais_haptic.policy, ais_haptic.robot_frame).
 # Each trial is saved as <results>/trial_XXXX.npz (per tick + raw sensor stream) and .json (summary), one row of
 # <results>/results.csv (cup, object, start pose, controller, success...), and, by default, a data_logger .mat
@@ -50,12 +53,11 @@ MOVE_SPEED, MOVE_ACC = 0.05, 0.3
 TOUCH_SPEED, TOUCH_ACC = 0.005, 0.1
 BOUNDARY_MM = 30.0
 TRACKING_LIMIT_MM = 3.0
-HOLD_AFTER_SEAL_S = 1.0
+HOLD_AFTER_STOP_S = 1.0     # still, vacuum on, after every trial end (sealed or not)
+STATIC_WINDOW_S = 0.5       # static-pressure statistics use the last part of a still period
 RELEASE_WAIT_S = 0.5
-POLICY_FILES = {('ppo', 3): 'ppo_ch3_s2_ch3_s5.npz', ('ppo', 6): 'ppo_ch6_s2_ch6_s1.npz',
-                ('sac', 3): 'sac_ch3_ch3_sac_log_s3.npz'}
-POLICY_NAMES = {'ppo_ch3_s2_ch3_s5.npz': 's2_ch3_s5', 'ppo_ch6_s2_ch6_s1.npz': 's2_ch6_s1',
-                'sac_ch3_ch3_sac_log_s3.npz': 'ch3_sac_log_s3'}
+POLICY_FILES = {('ppo', 3): 'ppo_ch3_v3_s2_ch3_s4.npz', ('ppo', 6): 'ppo_ch6_v3_s2_ch6_s4.npz'}
+POLICY_NAMES = {'ppo_ch3_v3_s2_ch3_s4.npz': 's2_ch3_s4', 'ppo_ch6_v3_s2_ch6_s4.npz': 's2_ch6_s4'}   # v3 refit runs
 
 
 def parse_trials(spec):
@@ -86,6 +88,32 @@ class Plan:
 
     def object_distance_mm(self, xy_m):
         return float(np.linalg.norm(np.asarray(xy_m) - self.origin_xy) * 1000.)
+
+    def object_pose(self, ur_pose, cup):
+        """UR pose -> cup centre (mm) and simulator body yaw (deg) in the object frame."""
+        th = np.radians(self.frame['calibration_rotation_deg'])
+        d = (np.asarray(ur_pose[:2]) - self.origin_xy) * 1000.
+        x, y = np.cos(th) * d[0] + np.sin(th) * d[1], -np.sin(th) * d[0] + np.cos(th) * d[1]
+        yaw = wrap_deg(cup.body_yaw_for_psi(tool_yaw_deg(ur_pose)) - self.frame['calibration_rotation_deg'])
+        return float(x), float(y), float(yaw)
+
+
+def static_pressure(io, cup, plan, rtde, seconds, window_s=STATIC_WINDOW_S):
+    """Hold still for `seconds` with the vacuum on; statistics of the 7-point-average chamber vacuum (simulator order,
+    Pa) over the last `window_s`, with the cup pose in the object frame. For the measured-vs-model parity plot."""
+    t, samples = [], []
+    t_end = time.monotonic() + seconds
+    while True:
+        t.append(time.monotonic())
+        samples.append(cup.sim_vacuum(io.pressure()))
+        if time.monotonic() >= t_end:
+            break
+        time.sleep(0.01)
+    t, samples = np.array(t), np.array(samples)
+    last = samples[t >= t[-1] - window_s]
+    x, y, yaw = plan.object_pose(list(rtde.rtde_r.getActualTCPPose()), cup)
+    return dict(mean_pa=last.mean(axis=0).tolist(), std_pa=last.std(axis=0).tolist(), n=int(len(last)),
+                window_s=window_s, x_obj_mm=x, y_obj_mm=y, yaw_obj_deg=yaw), samples
 
 
 def load_rows(args, cup):
@@ -160,7 +188,7 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
     integ = BodyCommandIntegrator(plan.xy, plan.z_top - args.press_mm / 1000.0, plan.theta, cup, dt)
     io.start_raw_recording()
     io.vacuum(True)
-    time.sleep(args.settle_s)
+    static_start, _ = static_pressure(io, cup, plan, rtde, args.settle_s)   # still at the start pose, before control
 
     log = {k: [] for k in ('t', 'sensor_pa', 'vacuum_sim_pa', 'action', 'target', 'actual', 'theta_cmd', 'obs')}
     reason, t0, seal_tick = 'timeout', time.monotonic(), None
@@ -211,12 +239,7 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
         rtde.rtde_c.servoStop()
         elapsed = time.monotonic() - t0
         io.sync(2)
-    hold = []
-    if reason == 'sealed':
-        t_hold = time.monotonic() + HOLD_AFTER_SEAL_S
-        while time.monotonic() < t_hold:
-            hold.append(cup.sim_vacuum(io.pressure()))
-            time.sleep(0.01)
+    static_end, hold = static_pressure(io, cup, plan, rtde, HOLD_AFTER_STOP_S)   # still at the end pose
     io.vacuum(False)
     time.sleep(RELEASE_WAIT_S)
     raw_t, raw_stamp, raw_pa = io.stop_raw_recording()
@@ -233,7 +256,8 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
                    ticks=len(log['t']), seal_tick=seal_tick, path_cmd_mm=integ.path_mm, path_actual_mm=path_actual,
                    yaw_path_deg=integ.yaw_path_deg,
                    end_object_distance_mm=plan.object_distance_mm(end_pose[:2]),
-                   hold_min_vacuum_pa=(np.min(hold, axis=0).tolist() if hold else None),
+                   hold_min_vacuum_pa=np.min(hold, axis=0).tolist(),
+                   static_start=static_start, static_end=static_end,
                    start=dict(x_m=plan.xy[0], y_m=plan.xy[1], z_top_m=plan.z_top, body_yaw_deg=plan.theta, tool_yaw_deg=plan.psi),
                    frame=plan.frame,
                    wrist3_deg=dict(before_unwind=q6_before, start=q6_start, min=q6_range[0], max=q6_range[1]),

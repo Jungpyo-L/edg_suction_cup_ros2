@@ -19,7 +19,7 @@ from ais_haptic import robot_frame as rf  # noqa: E402
 spec = importlib.util.spec_from_file_location('runner', AIS / 'nodes' / 'ais_trial_runner.py')
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
-runner.HOLD_AFTER_SEAL_S = runner.RELEASE_WAIT_S = 0.0
+runner.HOLD_AFTER_STOP_S = runner.RELEASE_WAIT_S = 0.0
 
 
 class UR:
