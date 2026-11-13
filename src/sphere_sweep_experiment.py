@@ -1252,13 +1252,10 @@ def validate_args(args):
                 "--standoff above. Use --mode tap or force.")
         radii = parse_radii(args.spheres)
         if any(radius <= 0.0 for radius in radii):
-            if args.center_jitter is None or args.center_jitter <= 0.0:
-                raise ValueError(
-                    "The flat panel (0 in --spheres) needs --center-jitter: how "
-                    "far from its middle the taps may land, clear of the holes.")
-            if args.hole_jitter <= 0.0:
-                raise ValueError("--hole-jitter must be positive, got %s"
-                                 % args.hole_jitter)
+            for flag, value in (("--center-jitter", args.center_jitter),
+                                ("--hole-jitter", args.hole_jitter)):
+                if value <= 0.0:
+                    raise ValueError("%s must be positive, got %s" % (flag, value))
         for radius in radii:
             # Checked here rather than when the plan is built, so a bad width
             # is refused before anyone has jogged four spheres.
@@ -1993,14 +1990,13 @@ if __name__ == "__main__":
                         "point at a time, until every sphere is done. Needs "
                         "--repeat; --radius and --offsets are ignored. A 0 is "
                         "the flat panel, jogged at its middle and then at each "
-                        "of its 4 holes; needs --center-jitter")
-    parser.add_argument("--center-jitter", type=float, default=None,
+                        "of its 4 holes")
+    parser.add_argument("--center-jitter", type=float, default=0.002,
                         help="flat panel: furthest a tap may land from the "
-                        "panel's middle (m). Keep it clear of the holes")
-    parser.add_argument("--hole-jitter", type=float, default=0.007,
+                        "panel's middle (m)")
+    parser.add_argument("--hole-jitter", type=float, default=0.002,
                         help="flat panel: furthest a tap may land from a hole's "
-                        "centre (m). Give the hole-centre-to-edge distance, so "
-                        "the cup's centre never passes the edge")
+                        "centre (m)")
     parser.add_argument("--jitter-fraction", type=float, default=1.0 / 3.0,
                         help="how far from each sphere's apex its points may "
                         "sit, as a fraction of that sphere's radius, when "

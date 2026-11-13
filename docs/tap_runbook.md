@@ -105,26 +105,24 @@ A `0` in `--spheres` is the flat panel. It is jogged at **five** places, in
 this order: the panel middle, then the centre of hole 1, 2, 3 and 4. Number
 the holes in any order but keep it the same every run.
 
-- Middle taps land within `--center-jitter` of the middle (required; keep it
-  clear of the holes).
-- Hole taps land within `--hole-jitter` of the hole centre (default 7 mm, the
-  hole-centre-to-edge distance, so the cup's centre never passes the edge and
-  part of the cup always sits on the plate). If the holes differ, give the
-  smallest distance.
+- Middle taps land within `--center-jitter` of the middle (default 2 mm).
+- Hole taps land within `--hole-jitter` of the hole centre (default 2 mm).
+- The panel only allows about 2 mm either way, so leave both at the default
+  unless the panel changes. (The two 2026-11-05 panel runs used 20 mm middle /
+  7 mm hole jitter, before this limit was set.)
 - Each of the five gets `--repeat` points of its own, so the panel gets 5x the
   taps of a sphere.
 
-All spheres plus the panel (600 taps). Replace the `--center-jitter` value
-with the real middle-to-hole clearance:
+All spheres plus the panel (600 taps):
 
 ```bash
-ros2 run suction_cup sphere_sweep_experiment.py --spheres 0.020,0.025,0.030,0.035,0.040,0 --mode tap --hover-height 0.003 --travel-height 0.020 --tap-speed 0.010 --tap-acc 0.1 --tap-force 2.5 --max-indent 0.006 --max-search 0.020 --log-tap-only --unattended --repeat 12 --yaws 5 --yaw-span 30 --yaw-start -12 --yaw-jitter 1.5 --jitter-fraction 0.5 --center-jitter 0.020 --jog-apex --jog-range 0.30
+ros2 run suction_cup sphere_sweep_experiment.py --spheres 0.020,0.025,0.030,0.035,0.040,0 --mode tap --hover-height 0.003 --travel-height 0.020 --tap-speed 0.010 --tap-acc 0.1 --tap-force 2.5 --max-indent 0.006 --max-search 0.020 --log-tap-only --unattended --repeat 12 --yaws 5 --yaw-span 30 --yaw-start -12 --yaw-jitter 1.5 --jitter-fraction 0.5 --jog-apex --jog-range 0.30
 ```
 
 The flat panel alone (300 taps; one class only, so not trainable on its own):
 
 ```bash
-ros2 run suction_cup sphere_sweep_experiment.py --spheres 0 --mode tap --hover-height 0.003 --travel-height 0.020 --tap-speed 0.010 --tap-acc 0.1 --tap-force 2.5 --max-indent 0.006 --max-search 0.020 --log-tap-only --unattended --repeat 12 --yaws 5 --yaw-span 30 --yaw-start -12 --yaw-jitter 1.5 --center-jitter 0.020 --jog-apex --jog-range 0.30
+ros2 run suction_cup sphere_sweep_experiment.py --spheres 0 --mode tap --hover-height 0.003 --travel-height 0.020 --tap-speed 0.010 --tap-acc 0.1 --tap-force 2.5 --max-indent 0.006 --max-search 0.020 --log-tap-only --unattended --repeat 12 --yaws 5 --yaw-span 30 --yaw-start -12 --yaw-jitter 1.5 --jog-apex --jog-range 0.30
 ```
 
 The saved points are keyed `0.0000` (middle) and `0.0000_hole1` ...
@@ -139,7 +137,7 @@ The saved points are keyed `0.0000` (middle) and `0.0000_hole1` ...
 | `--yaw-start`, `--yaw-span` | the rotations run from start to start + span, in deg |
 | `--yaw-jitter` | each rotation dithered by up to this many deg |
 | `--jitter-fraction` | sphere taps land within this fraction of the radius from the apex |
-| `--center-jitter`, `--hole-jitter` | flat panel ranges, m (see above) |
+| `--center-jitter`, `--hole-jitter` | flat panel ranges, m (default 0.002 each) |
 | `--seed` | fixes the random tap positions; a new random one is used and saved if omitted |
 | `--dry-run` | print the plan without moving (needs saved points) |
 | `--no-home` | stay at the travel plane at the end instead of parking |
@@ -251,8 +249,8 @@ The saved model is fitted on every tap; the score printed is from the split.
 | `1102_212100` | 4-ch | R20/25/30/40 | 15 mm/s | first positions, yaw start -15 |
 | `1103_175008` | 4-ch | R20/25/30/40 | 15 mm/s | spheres moved, yaw start -12 |
 | `1103_181400` | 4-ch | R20/25/30/40 | 10 mm/s | spheres moved, yaw start -12 |
-| `1105_??????` | 4-ch | flat panel only (middle + 4 holes) | 10 mm/s | 300 taps; file name to fill in |
-| `1105_??????` | 4-ch | flat panel only (middle + 4 holes) | 15 mm/s | 300 taps; file name to fill in |
+| `1105_??????` | 4-ch | flat panel only (middle + 4 holes) | 10 mm/s | 300 taps, 20 mm middle / 7 mm hole jitter; file name to fill in |
+| `1105_??????` | 4-ch | flat panel only (middle + 4 holes) | 15 mm/s | 300 taps, 20 mm middle / 7 mm hole jitter; file name to fill in |
 
 Still to do: 12.5 mm/s with the spheres moved.
 
