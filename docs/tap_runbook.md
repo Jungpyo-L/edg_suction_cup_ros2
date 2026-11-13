@@ -132,7 +132,7 @@ The saved points are keyed `0.0000` (middle) and `0.0000_hole1` ...
 
 | Option | Meaning |
 |---|---|
-| `--tap-speed` | descent speed, m/s (0.010, 0.0125, 0.015 used so far) |
+| `--tap-speed` | descent speed, m/s (0.010, 0.0125, 0.015 used so far). No upper limit: the force overshoots `--tap-force` more the faster it goes, and above ~3 mm/s raise `--tap-acc` too, or the cup is still speeding up when it reaches the surface from 3 mm hover (needs v^2/2a under 3 mm: 0.5 m/s^2 is enough up to ~50 mm/s) |
 | `--repeat`, `--yaws` | points per surface, rotations per point |
 | `--yaw-start`, `--yaw-span` | the rotations run from start to start + span, in deg |
 | `--yaw-jitter` | each rotation dithered by up to this many deg |
@@ -149,6 +149,53 @@ is 0 for a sphere or the panel middle and n for hole n), `tap_radius` (0 for
 flat), `tap_results` (contact z, stop z, peak force, why it stopped),
 `apex_used` (one row per jogged point) and `surface_names` (which surface each
 row of `apex_used` is).
+
+### Several runs in a row: `sweep_queue.py`
+
+Write the runs into a text file, one per line, each line being exactly the
+arguments you would give `sphere_sweep_experiment.py`. `#` starts a comment.
+Only the **first** line may jog (`--jog-apex`); the rest reuse the saved
+points, so after the jog you can leave. `--unattended` is added where missing.
+
+```text
+# queue.txt - jog the spheres once, then three speeds (0.1 m/s^2 as in earlier runs; 25 mm/s needs 0.5)
+--spheres 0.020,0.025,0.030,0.040 --mode tap --hover-height 0.003 --travel-height 0.020 --tap-speed 0.010 --tap-acc 0.1 --tap-force 2.5 --max-indent 0.006 --max-search 0.020 --log-tap-only --repeat 12 --yaws 5 --yaw-span 30 --yaw-start -12 --yaw-jitter 1.5 --jitter-fraction 0.5 --jog-apex --jog-range 0.30
+--spheres 0.020,0.025,0.030,0.040 --mode tap --hover-height 0.003 --travel-height 0.020 --tap-speed 0.015 --tap-acc 0.1 --tap-force 2.5 --max-indent 0.006 --max-search 0.020 --log-tap-only --repeat 12 --yaws 5 --yaw-span 30 --yaw-start -12 --yaw-jitter 1.5 --jitter-fraction 0.5
+--spheres 0.020,0.025,0.030,0.040 --mode tap --hover-height 0.003 --travel-height 0.020 --tap-speed 0.025 --tap-acc 0.5 --tap-force 2.5 --max-indent 0.006 --max-search 0.020 --log-tap-only --repeat 12 --yaws 5 --yaw-span 30 --yaw-start -12 --yaw-jitter 1.5 --jitter-fraction 0.5
+```
+
+Make the file on the lab machine (paste the lines in, save with Ctrl-O, exit
+with Ctrl-X):
+
+```bash
+nano ~/queue.txt
+```
+
+Check every line and print each run's plan without moving the robot:
+
+```bash
+ros2 run suction_cup sweep_queue.py ~/queue.txt --dry-run
+```
+
+Run it:
+
+```bash
+ros2 run suction_cup sweep_queue.py ~/queue.txt
+```
+
+- Every line is checked before the robot moves: a typo, a bad value, a jog on
+  a later line, or a surface that is neither saved nor jogged by an earlier
+  line stops it at the start. A surface added on a later line (e.g. the flat
+  panel) must be jogged in the first line too, or already saved.
+- A failed run (protective stop, sensor dropout, ...) has already lifted the
+  cup and parked the arm; the queue then stops. `--keep-going` carries on with
+  the next run instead. `--pause` sets the wait between runs (default 10 s).
+- Ctrl-C lets the current run recover the arm, then stops the queue.
+- Each run saves its own `.mat` as usual. A log of every run (start time,
+  minutes, ok/failed, files saved) goes to `~/EDG_Experiment/queue_<date>_<time>.log`,
+  and a summary prints at the end.
+- Rough time per run: about 21-23 min for 12 x 5 on four spheres (240 taps),
+  25-27 min for the flat panel alone (300 taps).
 
 ## 4. Jogging
 

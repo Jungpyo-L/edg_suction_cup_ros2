@@ -796,19 +796,8 @@ def descend_to_contact(node, rtde_help, ft_help, xy, z_start, orientation, args,
 # a lone noise spike would otherwise mark contact early, stopping the tap short
 # and mislabelling where it began.
 CONTACT_SAMPLES = 3
-# Furthest the cup may travel between two force samples, m. This is what
-# "faster than the sensor can detect" means as a distance: the stop can only
-# act on a sample, so contact and the --tap-force crossing are each located no
-# more finely than this, and on a contact of stiffness k the force can run past
-# the target by up to k times this before the sample that stops it arrives.
-MAX_TRAVEL_PER_SAMPLE = 1e-4
-# Measured sample rates jitter by a sample or two a second. Without slack, a
-# speed sitting exactly at the limit would be refused or allowed at random.
-RATE_SLACK = 0.05
-# Absolute cap on --tap-speed whatever the sensor rate, m/s.
-MAX_TAP_SPEED = 0.05
 # Deceleration for stopL, m/s^2. Stopping distance is v^2/2a: 0.01 mm at the
-# default 10 mm/s, 0.25 mm at MAX_TAP_SPEED.
+# default 10 mm/s, 0.25 mm at 50 mm/s.
 STOP_DECEL = 5.0
 # How close to the search floor counts as having reached it, m.
 FLOOR_TOLERANCE = 1e-4
@@ -970,25 +959,16 @@ class TapWatcher:
 
 
 def check_tap_speed(args, rate):
-    """Refuse a --tap-speed the force sensor is too slow to keep up with."""
+    """Refuse to tap without the force sensor, and report how far the cup
+    moves between its samples. Any --tap-speed is allowed: the stop acts on a
+    sample, so the force runs further past --tap-force the faster the tap."""
     if rate <= 0:
         raise RuntimeError(
             "No /netft_data arrived within 10 s - tap mode needs the force "
             "sensor. Check that netft_node is running and the ATI sensor IP is "
             "reachable.")
-    per_sample = args.tap_speed / rate
-    allowed = rate * MAX_TRAVEL_PER_SAMPLE * (1.0 + RATE_SLACK)
     print("Force sensor at %.0f Hz: at %.1f mm/s the cup moves %.3f mm between "
-          "samples (limit %.3f mm, so up to %.1f mm/s)."
-          % (rate, args.tap_speed * 1e3, per_sample * 1e3,
-             MAX_TRAVEL_PER_SAMPLE * 1e3, min(allowed, MAX_TAP_SPEED) * 1e3))
-    if args.tap_speed > allowed:
-        raise ValueError(
-            "--tap-speed %.1f mm/s is too fast for a force sensor at %.0f Hz: "
-            "the cup would move %.3f mm between samples, over the %.3f mm "
-            "limit. Use --tap-speed %.4f or slower."
-            % (args.tap_speed * 1e3, rate, per_sample * 1e3,
-               MAX_TRAVEL_PER_SAMPLE * 1e3, math.floor(allowed * 1e4) / 1e4))
+          "samples." % (rate, args.tap_speed * 1e3, args.tap_speed / rate * 1e3))
 
 
 def tap_surface(rtde_help, watch, xy, z_start, orientation, args, on_event):
@@ -1221,13 +1201,6 @@ def validate_args(args):
             "--tap-force (%.2f N) must exceed --contact-force (%.2f N), or the "
             "tap stops on the reading that marks contact."
             % (args.tap_force, args.contact_force)
-        )
-    if args.tap_speed > MAX_TAP_SPEED:
-        raise ValueError(
-            "--tap-speed %.3f m/s is above the %.3f m/s this script allows. The "
-            "stop acts through ROS and RTDE latency, so the overshoot past "
-            "--tap-force grows with speed; raise MAX_TAP_SPEED deliberately if "
-            "you mean it." % (args.tap_speed, MAX_TAP_SPEED)
         )
     if args.log_tap_only and args.mode != "tap":
         raise ValueError(
@@ -1863,7 +1836,9 @@ def main(args):
             rclpy.shutdown()
 
 
-if __name__ == "__main__":
+def build_parser():
+    """The command line. sweep_queue.py uses it too, to check every run in a
+    queue before the first one starts."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--offsets",
@@ -2043,4 +2018,8 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true",
                         help="print the planned poses without moving the robot")
     parser.add_argument("--author", type=str, default="EDG")
-    main(parser.parse_args())
+    return parser
+
+
+if __name__ == "__main__":
+    main(build_parser().parse_args())
