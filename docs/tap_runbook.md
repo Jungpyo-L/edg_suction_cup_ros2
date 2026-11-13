@@ -251,6 +251,9 @@ The saved model is fitted on every tap; the score printed is from the split.
 | `1103_181400` | 4-ch | R20/25/30/40 | 10 mm/s | spheres moved, yaw start -12 |
 | `1105_??????` | 4-ch | flat panel only (middle + 4 holes) | 10 mm/s | 300 taps, 20 mm middle / 7 mm hole jitter; file name to fill in |
 | `1105_??????` | 4-ch | flat panel only (middle + 4 holes) | 15 mm/s | 300 taps, 20 mm middle / 7 mm hole jitter; file name to fill in |
+| `1112_172507` | 3-ch | flat panel only (middle + 4 holes) | 10 mm/s | 300 taps, 2 mm jitter, jogged |
+| `1112_175420` | 3-ch | flat panel only (middle + 4 holes) | 15 mm/s | 300 taps, 2 mm jitter, reused 172507 points |
+| `1112_183045` | 3-ch | R20/25/30/40 | 15 mm/s | 12 pts x 10 yaws, yaw start -15, new sphere arrangement; pairs with `1022_175827` (10 mm/s) |
 
 Still to do: 12.5 mm/s with the spheres moved.
 
