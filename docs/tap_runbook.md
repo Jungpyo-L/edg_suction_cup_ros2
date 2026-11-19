@@ -25,22 +25,20 @@ cd ~/ros2_ws && source /opt/ros/jazzy/setup.bash && colcon build --packages-sele
 
 Check what is checked out with `git log --oneline -1`.
 
-## 2. Start the robot and sensors (three terminals)
+## 2. Start the robot and sensors (two terminals)
 
 Before starting: on the teach pendant the robot is powered on, brakes
-released, no protective stop, and in **Remote Control** mode. If any of these
-is off, every script hangs at `Opening the RTDE control interface ...`.
+released and no protective stop (on an e-Series pendant, also **Remote
+Control** mode; the CB3 has no such setting).
 
-Terminal 1, robot driver:
+**Do not launch `ur_control.launch.py` (the UR driver) for sweeps, jogging,
+`go_home.py` or live prediction.** The driver sends its own control program to
+the robot, which runs one at a time, and these scripts need that slot: with
+the driver up they hang at `Opening the RTDE control interface ...`
+(2026-11-19). Start the driver only for MoveIt/RViz work, and stop it again
+(Ctrl-C) before running anything here.
 
-```bash
-source /opt/ros/jazzy/setup.bash && source ~/ros2_ws/install/setup.bash
-```
-```bash
-ros2 launch suction_cup ur_control.launch.py
-```
-
-Terminal 2, sensors and data logger:
+Terminal 1, sensors and data logger:
 
 ```bash
 source /opt/ros/jazzy/setup.bash && source ~/ros2_ws/install/setup.bash
@@ -49,7 +47,7 @@ source /opt/ros/jazzy/setup.bash && source ~/ros2_ws/install/setup.bash
 ros2 launch suction_cup suction_experiment.launch.py
 ```
 
-Terminal 3, check both sensors, then run experiments from here:
+Terminal 2, check both sensors, then run experiments from here:
 
 ```bash
 source /opt/ros/jazzy/setup.bash && source ~/ros2_ws/install/setup.bash
@@ -308,7 +306,7 @@ Still to do: 12.5 mm/s with the spheres moved.
 
 | Symptom | Cause / fix |
 |---|---|
-| Hangs at `Opening the RTDE control interface ...` | pendant: clear the protective stop, power on, brakes off, Remote Control mode |
+| Hangs at `Opening the RTDE control interface ...` | first: Ctrl-C `ur_control.launch.py` if it is running (it holds the robot's control slot). Then the pendant: clear the protective stop, power on, brakes off (Remote Control mode on e-Series). `ping -c 3 10.0.0.1` checks the cable |
 | `git pull`: no tracking information | see section 1 |
 | `topic [/SensorPacket] does not appear to be published yet` | wait a few seconds after launch |
 | Run taps the old sphere positions | spheres were moved: run with `--jog-apex` |
