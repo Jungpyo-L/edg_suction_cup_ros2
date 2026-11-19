@@ -1812,8 +1812,7 @@ def main(args):
         # this point, 2026-11-19, with the data already saved).
         if os.environ.get("SWEEP_DONE_FILE"):
             with open(os.environ["SWEEP_DONE_FILE"], "w") as done:
-                done.write("complete
-")
+                done.write("complete\n")
     except KeyboardInterrupt:
         print()
         print("============ Interrupted. Recovering the arm; do not press Ctrl-C again.")
