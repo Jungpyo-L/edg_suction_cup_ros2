@@ -1807,6 +1807,13 @@ def main(args):
         )
         file_help.clearTmpFolder()
         print("============ Sphere sweep complete!")
+        # Tells sweep_queue.py the run finished and saved, even if the process
+        # then dies on its way out (an abort in C++ teardown has happened after
+        # this point, 2026-11-19, with the data already saved).
+        if os.environ.get("SWEEP_DONE_FILE"):
+            with open(os.environ["SWEEP_DONE_FILE"], "w") as done:
+                done.write("complete
+")
     except KeyboardInterrupt:
         print()
         print("============ Interrupted. Recovering the arm; do not press Ctrl-C again.")

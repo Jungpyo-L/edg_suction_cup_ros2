@@ -310,6 +310,7 @@ Still to do: 12.5 mm/s with the spheres moved.
 
 | Symptom | Cause / fix |
 |---|---|
+| A run ends `terminate called without an active exception` after `Sphere sweep complete!` (queue: `exit -6`) | a C++ abort while exiting; the `.mat` was already saved and is complete. The queue counts such a run as done and carries on |
 | Hangs at `Opening the RTDE control interface ...` | first: Ctrl-C `ur_control.launch.py` if it is running (it holds the robot's control slot). Then the pendant: clear the protective stop, power on, brakes off (Remote Control mode on e-Series). `ping -c 3 10.0.0.1` checks the cable |
 | `git pull`: no tracking information | see section 1 |
 | `topic [/SensorPacket] does not appear to be published yet` | wait a few seconds after launch |

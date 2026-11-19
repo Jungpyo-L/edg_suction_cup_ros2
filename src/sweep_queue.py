@@ -21,7 +21,8 @@ and every surface they tap must already be saved or jogged by an earlier run.
 
 Each run saves its own .mat as usual. A run that fails stops the queue (the
 sweep has already lifted the cup and parked the arm); --keep-going carries on
-with the next run instead. Ctrl-C lets the current sweep recover the arm, then
+with the next run instead. A run that finished and saved but crashed while
+exiting counts as done. Ctrl-C lets the current sweep recover the arm, then
 stops the queue. A log of every run, its exit status and the files it saved is
 written to ~/EDG_Experiment/queue_<date>_<time>.log.
 """
@@ -98,10 +99,12 @@ def saved_files():
     return set(glob.glob(os.path.join(DATA_DIR, "*", "*.mat")))
 
 
-def run_one(words):
+def run_one(words, done_file):
     """Run one sweep to the end. Returns its exit code, or None when Ctrl-C
-    stopped it (after letting it recover the arm)."""
-    child = subprocess.Popen([sys.executable, SWEEP] + words)
+    stopped it (after letting it recover the arm). The sweep writes
+    `done_file` once it has finished and saved."""
+    env = dict(os.environ, SWEEP_DONE_FILE=done_file)
+    child = subprocess.Popen([sys.executable, SWEEP] + words, env=env)
     try:
         return child.wait()
     except KeyboardInterrupt:
@@ -159,10 +162,24 @@ def main():
             print("\n[queue] ===== run %d of %d (line %d) =====" % (index + 1, len(runs), number))
             before, started = saved_files(), time.monotonic()
             stamp = datetime.now().strftime("%H:%M:%S")
-            code = run_one(words)
+            done_file = log_path + ".run%d.done" % (index + 1)
+            code = run_one(words, done_file)
+            finished = os.path.exists(done_file)
+            if finished:
+                os.remove(done_file)
             minutes = (time.monotonic() - started) / 60.0
             new = sorted(saved_files() - before)
-            status = "stopped" if code is None else ("ok" if code == 0 else "failed (exit %d)" % code)
+            if code is None:
+                status = "stopped"
+            elif code == 0:
+                status = "ok"
+            elif finished:
+                # Finished and saved, then died on the way out: the data is
+                # complete, so the queue carries on.
+                status = "ok (finished and saved, then exited with %d)" % code
+                code = 0
+            else:
+                status = "failed (exit %d)" % code
             results.append((index + 1, status, minutes, new))
             log.write("\nrun %d (line %d) started %s, %.1f min, %s\n  args: %s\n"
                       % (index + 1, number, stamp, minutes, status, " ".join(words)))
