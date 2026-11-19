@@ -215,6 +215,10 @@ ros2 run suction_cup sweep_queue.py ~/queue.txt
 - The 100 mm step can go down: make sure there is room below before pressing
   Shift+F in 100 mm mode. Come down the last few mm with plain `f` and `[`.
 - A jog may move at most `--jog-range` sideways from where it opened.
+- Each key press moves at `--jog-speed` (default 0.05 m/s, was 0.02 before
+  2026-11-19) with `--jog-acc` (default 0.25 m/s^2): a 100 mm step takes
+  about 2 s. A move can't be stopped from the keyboard once it starts, so
+  raise it only with room around the cup (e.g. `--jog-speed 0.10`).
 - After moving spheres, always run with `--jog-apex`: a run without it taps
   the old saved positions.
 

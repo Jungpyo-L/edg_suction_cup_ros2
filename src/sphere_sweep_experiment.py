@@ -309,7 +309,7 @@ def jog_to_apex(rtde_help, apex, orientation, args):
 
         target = moved
         rtde_help.goToPose(rtde_help.getPoseObj(list(target), orientation),
-                           speed=0.02, acc=0.1)
+                           speed=args.jog_speed, acc=args.jog_acc)
         offset = target - start
         print("  x=%.5f y=%.5f z=%.5f   offset dx=%+.1f dy=%+.1f dz=%+.1f mm"
               % (target[0], target[1], target[2],
@@ -1154,6 +1154,8 @@ def validate_args(args):
         "--tap-acc": args.tap_acc,
         "--max-indent": args.max_indent,
         "--jog-coarse": args.jog_coarse,
+        "--jog-speed": args.jog_speed,
+        "--jog-acc": args.jog_acc,
         "--apex-samples": args.apex_samples,
         "--apex-timeout": args.apex_timeout,
     }
@@ -1945,6 +1947,12 @@ def build_parser():
     parser.add_argument("--jog-big", type=float, default=0.100,
                         help="jog increment (m) for Shift + a move key after m "
                         "switches the jog to big steps, for crossing the bed")
+    parser.add_argument("--jog-speed", type=float, default=0.05,
+                        help="speed of each jog move (m/s). Each key press is "
+                        "one move that cannot be stopped from the keyboard, so "
+                        "keep it low enough to react to on a 100 mm step")
+    parser.add_argument("--jog-acc", type=float, default=0.25,
+                        help="acceleration of each jog move (m/s^2)")
     parser.add_argument("--jog-height", type=float, default=None,
                         help="height above the starting apex estimate that the "
                         "jog opens at (m). Defaults to --hover-height. Give it "
