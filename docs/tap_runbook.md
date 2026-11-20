@@ -321,6 +321,11 @@ The saved model is fitted on every tap; the score printed is from the split.
 | `1112_172507` | 3-ch | flat panel only (middle + 4 holes) | 10 mm/s | 300 taps, 2 mm jitter, jogged |
 | `1112_175420` | 3-ch | flat panel only (middle + 4 holes) | 15 mm/s | 300 taps, 2 mm jitter, reused 172507 points |
 | `1112_183045` | 3-ch | R20/25/30/40 | 15 mm/s | 12 pts x 10 yaws, yaw start -15, new sphere arrangement; pairs with `1022_175827` (10 mm/s) |
+| `1119_135857` | 3-ch | R20/25/30/40 | 50 mm/s | 12 x 10, yaw start -15, tap-acc 3.0, jogged; 1119 runs share this jog |
+| `1119_144045` | 3-ch | R20/25/30/40 | 100 mm/s | 12 x 10, tap-acc 3.0 |
+| `1119_151453` | 3-ch | R20/25/30/40 | 25 mm/s | 12 x 10, tap-acc 3.0; via queue (aborted on exit after saving) |
+| `1119_155828` | 3-ch | R20/25/30/40 | 10 mm/s | 12 x 10, tap-acc 3.0; current-setup 10 mm/s partner for the speed study |
+| `1119_135810`, `1119_143414` | 3-ch | R20/25/30/40 | 50 mm/s | partial (1 and 87 taps) - do not use |
 
 Still to do: 12.5 mm/s with the spheres moved.
 
