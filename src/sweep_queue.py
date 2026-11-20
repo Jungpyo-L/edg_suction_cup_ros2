@@ -14,9 +14,11 @@ are ignored. For example:
     ros2 run suction_cup sweep_queue.py ~/queue.txt --dry-run
 
 Every line is parsed and checked before the robot moves, so a typo in the last
-run is caught at the start, not hours in. Only the first run may jog
-(--jog-apex needs someone at the keyboard); later runs reuse the saved points,
-and every surface they tap must already be saved or jogged by an earlier run.
+run is caught at the start, not hours in. Jogs (--jog-apex) need someone at
+the keyboard, so only the first tapping run may jog, plus any --jog-only lines
+above it (jog and save, no taps) - e.g. one --jog-only line at the top that
+jogs the spheres and the flat panel together. Every surface a run taps must
+already be saved or jogged by an earlier line.
 --unattended is added to any line without it.
 
 Each run saves its own .mat as usual. A run that fails stops the queue (the
@@ -60,14 +62,19 @@ def check_queue(runs):
 
     parser = sweep.build_parser()
     jogged = set()
+    # Jogs wait at the keyboard, so they must all come before the first run
+    # that taps: after that nobody is expected to be there.
+    attended = True
     for index, (number, words) in enumerate(runs):
         where = "queue line %d" % number
-        if "--jog-apex" in words and index > 0:
+        if "--jog-apex" in words and not attended:
             raise ValueError(
-                "%s: only the first run may use --jog-apex - a jog waits at "
-                "the keyboard, which would hold the queue until someone came "
-                "back. Jog in the first run and let later runs reuse the "
-                "saved points." % where)
+                "%s: --jog-apex after a run that taps - a jog waits at the "
+                "keyboard, which would hold the queue until someone came back. "
+                "Jog in the first run, or in --jog-only lines at the top."
+                % where)
+        if "--jog-only" not in words:
+            attended = False
         if "--dry-run" in words:
             raise ValueError("%s: --dry-run in a queue line; use "
                              "sweep_queue.py --dry-run instead." % where)

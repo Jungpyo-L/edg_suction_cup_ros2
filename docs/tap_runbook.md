@@ -123,6 +123,15 @@ The flat panel alone (300 taps; one class only, so not trainable on its own):
 ros2 run suction_cup sphere_sweep_experiment.py --spheres 0 --mode tap --hover-height 0.003 --travel-height 0.020 --tap-speed 0.010 --tap-acc 0.1 --tap-force 2.5 --max-indent 0.006 --max-search 0.020 --log-tap-only --unattended --repeat 12 --yaws 5 --yaw-span 30 --yaw-start -12 --yaw-jitter 1.5 --jog-apex --jog-range 0.30
 ```
 
+**Flat panel matched to one sphere (120 taps).** A sphere in the 12 x 10 runs
+gets 120 taps. The panel's 5 sites each get `--repeat` points, so 3 points x 8
+rotations x 5 sites = 120 (24 per site, so 96 near holes and 24 in the middle),
+over the same 30 deg span:
+
+```bash
+ros2 run suction_cup sphere_sweep_experiment.py --spheres 0 --mode tap --hover-height 0.003 --travel-height 0.020 --tap-speed 0.010 --tap-acc 3.0 --tap-force 2.5 --max-indent 0.006 --max-search 0.020 --log-tap-only --unattended --repeat 3 --yaws 8 --yaw-span 30 --yaw-start -15 --yaw-jitter 1.875 --jog-apex --jog-range 0.30
+```
+
 The saved points are keyed `0.0000` (middle) and `0.0000_hole1` ...
 `0.0000_hole4` in the apex store.
 
@@ -185,6 +194,15 @@ ros2 run suction_cup sweep_queue.py ~/queue.txt
   a later line, or a surface that is neither saved nor jogged by an earlier
   line stops it at the start. A surface added on a later line (e.g. the flat
   panel) must be jogged in the first line too, or already saved.
+- To jog several surfaces before leaving (e.g. the spheres and the flat panel
+  after a cup swap), start the queue with a `--jog-only` line: it jogs and
+  saves every surface in its `--spheres`, then parks without tapping or saving
+  a `.mat`. Any number of `--jog-only` lines may come first; after the first
+  run that taps, no line may jog.
+
+```text
+--spheres 0.020,0.025,0.030,0.040,0 --mode tap --repeat 1 --yaws 1 --jog-apex --jog-range 0.30 --jog-only
+```
 - A failed run (protective stop, sensor dropout, ...) has already lifted the
   cup and parked the arm; the queue then stops. `--keep-going` carries on with
   the next run instead. `--pause` sets the wait between runs (default 10 s).

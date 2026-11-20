@@ -1204,6 +1204,8 @@ def validate_args(args):
             "tap stops on the reading that marks contact."
             % (args.tap_force, args.contact_force)
         )
+    if args.jog_only and not args.spheres:
+        raise ValueError("--jog-only works with --spheres.")
     if args.log_tap_only and args.mode != "tap":
         raise ValueError(
             "--log-tap-only cuts the log to the tap windows, and only --mode "
@@ -1225,6 +1227,8 @@ def validate_args(args):
                 "--spheres builds its waypoints on each sphere's own surface, "
                 "which offset mode would then touch instead of holding "
                 "--standoff above. Use --mode tap or force.")
+        if args.jog_only and not args.jog_apex:
+            raise ValueError("--jog-only only jogs, so it needs --jog-apex.")
         radii = parse_radii(args.spheres)
         if any(radius <= 0.0 for radius in radii):
             for flag, value in (("--center-jitter", args.center_jitter),
@@ -1608,6 +1612,19 @@ def main(args):
                 apexes = resolve_sphere_apexes(surfs, rtde_help, args,
                                                orientation_fixed,
                                                args.travel_height)
+                if args.jog_only:
+                    # The points are saved; lift clear of whatever the cup is
+                    # sitting on and park, without recording or tapping.
+                    here = rtde_help.rtde_r.getActualTCPPose()
+                    print("--jog-only: %d points saved, no taps. Parking."
+                          % len(apexes))
+                    retreat_to_home(rtde_help, max(here[2] + args.travel_height,
+                                                   HOME_POSITION[2]),
+                                    orientation_fixed)
+                    if os.environ.get("SWEEP_DONE_FILE"):
+                        with open(os.environ["SWEEP_DONE_FILE"], "w") as done:
+                            done.write("complete\n")
+                    return
             (labels, sphere_waypoints, yaw_plan, tap_radius, args.tap_plan,
              jitters) = multi_sphere_plan(surfs, apexes, yaws, args)
             args.tap_radius = np.array(tap_radius)
@@ -1953,6 +1970,11 @@ def build_parser():
     parser.add_argument("--jog-big", type=float, default=0.100,
                         help="jog increment (m) for Shift + a move key after m "
                         "switches the jog to big steps, for crossing the bed")
+    parser.add_argument("--jog-only", action="store_true",
+                        help="--spheres: jog and save every point, then park "
+                        "without tapping or recording. Lets one attended step "
+                        "at the top of a sweep_queue.py queue jog every surface "
+                        "the later runs use. Needs --jog-apex")
     parser.add_argument("--jog-speed", type=float, default=0.05,
                         help="speed of each jog move (m/s). Each key press is "
                         "one move that cannot be stopped from the keyboard, so "
