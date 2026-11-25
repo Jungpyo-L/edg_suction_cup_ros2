@@ -157,7 +157,7 @@ def main(args):
             print("force sensor ok (Fz noise %.3f N); height by touch-down at %.1f N" % (noise, args.touch_n))
 
         pts, raw = {}, []
-        wanted_tops = [v for v in args.top_objects.split(",") if v.strip()]
+        wanted_tops = args.reuse_tops or [v for v in args.top_objects.split(",") if v.strip()]
         for bore in args.bores.split(","):
             acc = []
             guess = predict_bore_xy(pts, bores_mm, bore)
@@ -219,7 +219,12 @@ def main(args):
         # contact height: touch object tops (the lip is easy to see there); the bore heights are then not used
         tops = []
         wanted = [int(v) for v in args.top_objects.split(",") if v.strip()]
-        if wanted:
+        if args.reuse_tops:
+            tops = json.loads(out.read_text())["top_points_m"]
+            if not tops:
+                raise RuntimeError("%s has no object-top points to reuse" % out)
+            print("\nreusing %d object-top points from %s (valid only if the plate and cup have not moved)" % (len(tops), out))
+        elif wanted:
             xy_cal = Calibration(solve(pts), layout)
             by_no = {int(n): o for o, n in layout["object_numbers"].items()}
             print("\nContact height: touch the top of object(s) %s. Pick a flat spot where the whole lip is on the surface\n"
@@ -283,6 +288,8 @@ if __name__ == "__main__":
     parser.add_argument("--top_objects", default="1,5,10,6",
                         help="object numbers whose top is touched for the contact height (3 or more spread out: plane; "
                              "1-2: height only, slope from the bores; empty: use the bore floors)")
+    parser.add_argument("--reuse_tops", action="store_true",
+                        help="redo the bores only: keep the object-top points of the existing calibration file")
     parser.add_argument("--touch", action="store_true",
                         help="after Enter, lower the cup at --touch_speed until the force sensor feels contact, and "
                              "record there (object tops; bore floors when --top_objects is empty)")
