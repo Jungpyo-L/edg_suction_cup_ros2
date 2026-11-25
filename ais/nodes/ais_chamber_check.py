@@ -40,6 +40,7 @@ HOVER_MM = 10.0
 TRAVEL_MM = 30.0
 MOVE_SPEED, MOVE_ACC = 0.03, 0.2
 TOUCH_SPEED = 0.005
+BORE_CHAMFER_MM = 1.0   # lead-in chamfer of the calibration bore (tools/export_robot_fixture.py): the opening at the top is wider
 MIN_SWING_PA = 200.0   # a channel that faces the bore at some yaw loses far more vacuum than this
 
 
@@ -56,8 +57,12 @@ def analyze_scan(psi, vac, open_dir, verbose=True):
     """psi (deg, tool yaw per step), vac (steps x channels, vacuum positive), open_dir (deg, robot frame, cup -> bore).
     Returns (per-channel report, chamber_map, body_offset_deg, fit rms deg, weakly modulated channels)."""
     alpha, report = [], []
+    # Fit each channel relative to the mean of all channels at that yaw. The chambers share one vacuum supply, so a
+    # large opening lowers every channel together (2026-11-25, ch3: all channels 0.3-10 kPa, moving together); the
+    # chamber that faces the opening is the one below the others, whatever the common level is.
+    rel = vac - vac.mean(axis=1, keepdims=True)
     for j in range(vac.shape[1]):
-        psi_min, amp, rms = fit_weakest_direction(psi, vac[:, j])
+        psi_min, amp, rms = fit_weakest_direction(psi, rel[:, j])
         alpha.append(float(wrap_deg(open_dir - psi_min)))
         report.append(dict(channel=j, weakest_at_psi=psi_min, direction_in_tool_deg=alpha[-1], modulation_pa=amp,
                            fit_rms_pa=rms, min_pa=float(vac[:, j].min()), max_pa=float(vac[:, j].max())))
@@ -91,7 +96,7 @@ def main(args):
     bore_base = np.array(bores[args.bore], float)
     d = np.radians(args.dir_deg)
     offset_mm = args.offset_mm if args.offset_mm is not None else \
-        cal.lay["calibration"]["bore_diameter"] / 2 + cup.lip_radius_mm - args.overlap_mm
+        cal.lay["calibration"]["bore_diameter"] / 2 + BORE_CHAMFER_MM + cup.lip_radius_mm - args.overlap_mm
     cup_base = bore_base + offset_mm * np.array([np.cos(d), np.sin(d)])
     bore_xy = cal.base_to_robot_mm(bore_base) / 1000.0
     cup_xy = cal.base_to_robot_mm(cup_base) / 1000.0
