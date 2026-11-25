@@ -46,7 +46,7 @@ def run(job):
     from tools.evaluate_v2_final import FinalEnvV2, final_inputs
     from tools.train_continuous_rl import case_noise_seed
     ctrl_name, ch = job
-    objects = json.loads(Path('robot/laser_cut_final_subset_K10/robot_subset_K10.json').read_text())['objects']
+    objects = json.loads(Path('robot/fixture_final_subset_K10/robot_subset_K10.json').read_text())['objects']
     model = None
     if ctrl_name in ('ppo', 'sac'):
         name, zip_path = POLICIES[(ctrl_name, ch)]
