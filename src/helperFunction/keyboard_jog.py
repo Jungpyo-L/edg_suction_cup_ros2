@@ -14,7 +14,13 @@ import tty
 
 JOG_KEYS = {"d": (1, 0, 0), "a": (-1, 0, 0), "w": (0, 1, 0), "s": (0, -1, 0), "r": (0, 0, 1), "f": (0, 0, -1)}
 STEPS_MM = {"1": 0.02, "2": 0.1, "3": 0.5, "4": 2.0, "5": 10.0, "6": 50.0}   # 1 = finest ... 6 = coarsest
-JOG_SPEED, JOG_ACC = 0.01, 0.1   # m/s, m/s^2
+JOG_SPEED, JOG_ACC = 0.01, 0.1   # m/s, m/s^2 (fine steps and squaring the tool)
+
+
+def step_speed(step_mm):
+    """(speed, acc) for one jog step: about 0.5 s per step, 10 mm/s for fine steps up to 100 mm/s for the 50 mm step."""
+    v = min(0.10, max(JOG_SPEED, 2.0 * step_mm / 1000.0))
+    return v, (0.5 if v > 0.02 else JOG_ACC)
 
 
 def _read_key(timeout=0.1):
@@ -89,10 +95,10 @@ def jog(rtde_help, label="", z_floor=None, step_mm=0.5):
             for i, d in enumerate(JOG_KEYS[key]):
                 target[i] += d * step_mm / 1000.0
             if z_floor is not None and target[2] < z_floor:
-                print("  refused: below the allowed height (%.2f mm)" % (z_floor * 1000))
+                print("  refused: below the allowed height (z %.1f mm); use a smaller step or raise the limit" % (z_floor * 1000))
                 continue
             ensure_control_script(rtde_help)
-            if not rtde_help.rtde_c.moveL(target, JOG_SPEED, JOG_ACC):
+            if not rtde_help.rtde_c.moveL(target, *step_speed(step_mm)):
                 print("  move refused by the controller (protective stop or limits?)")
             p = rtde_help.rtde_r.getActualTCPPose()
             print("  x %.2f  y %.2f  z %.2f mm" % (p[0] * 1000, p[1] * 1000, p[2] * 1000))

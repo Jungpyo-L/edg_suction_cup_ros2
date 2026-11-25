@@ -35,12 +35,10 @@ import rclpy
 from std_msgs.msg import Int8
 
 from ais_haptic.robot_frame import load_cups, tool_tilt_deg, tool_yaw_deg
+from helperFunction.keyboard_jog import jog
 from helperFunction.rtde_helper import rtdeHelp
 
-JOG_KEYS = {"d": (1, 0, 0), "a": (-1, 0, 0), "w": (0, 1, 0), "s": (0, -1, 0), "r": (0, 0, 1), "f": (0, 0, -1)}
-STEPS_MM = {"1": 0.02, "2": 0.1, "3": 0.5, "4": 2.0, "5": 10.0, "6": 50.0}   # 1 = finest ... 6 = coarsest
-JOG_SPEED, JOG_ACC = 0.01, 0.1   # m/s, m/s^2: slow enough to stop on a key release
-MAX_Z_DROP_M = 0.060             # refuse to jog more than 60 mm below the starting height
+JOG_SPEED, JOG_ACC = 0.01, 0.1   # m/s, m/s^2: automatic lift out of a bore
 
 
 def read_key(timeout=0.1):
@@ -53,39 +51,9 @@ def actual_pose(rtde):
 
 
 def jog_to_bore(rtde, label, z_floor):
-    """Keyboard jog with fixed orientation. Returns when Enter is pressed; 'q' aborts."""
-    print("\n[%s] jog:  a/d -x/+x   s/w -y/+y   f/r down/up (base frame)   step 1:0.02 2:0.1 3:0.5 4:2 5:10 6:50 mm" % label)
-    print("        Enter: record this pose    q: abort")
-    step = 0.5
-    old = termios.tcgetattr(sys.stdin)
-    try:
-        tty.setcbreak(sys.stdin.fileno())
-        while True:
-            key = read_key()
-            if key is None:
-                continue
-            if key in ("\n", "\r"):
-                return
-            if key == "q":
-                raise KeyboardInterrupt
-            if key in STEPS_MM:
-                step = STEPS_MM[key]
-                print("  step %.2f mm" % step)
-                continue
-            if key not in JOG_KEYS:
-                continue
-            pose = actual_pose(rtde)
-            target = list(pose)
-            for i, d in enumerate(JOG_KEYS[key]):
-                target[i] += d * step / 1000.0
-            if target[2] < z_floor:
-                print("  refused: more than %.0f mm below the start height" % (MAX_Z_DROP_M * 1000))
-                continue
-            rtde.rtde_c.moveL(target, JOG_SPEED, JOG_ACC)
-            p = actual_pose(rtde)
-            print("  x %.2f  y %.2f  z %.2f mm" % (p[0] * 1000, p[1] * 1000, p[2] * 1000))
-    finally:
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
+    """Keyboard jog with fixed orientation (helperFunction/keyboard_jog.py: step-dependent speed, t = freedrive,
+    control script restored after pendant use). Returns when Enter is pressed; q aborts."""
+    jog(rtde, label, z_floor=z_floor)
 
 
 def predict_bore_xy(recorded, bores_mm, target):
@@ -129,7 +97,7 @@ def main(args):
         if tool_tilt_deg(start) > 1.0:
             raise RuntimeError("The tool is not pointing straight down (tilt %.2f deg). Fix it on the pendant first."
                                % tool_tilt_deg(start))
-        z_floor = start[2] - MAX_Z_DROP_M
+        z_floor = start[2] - args.max_drop_mm / 1000.0
 
         pts, raw = {}, []
         for bore in args.bores.split(","):
@@ -205,5 +173,7 @@ if __name__ == "__main__":
     parser.add_argument("--bores", default="C0,C1,C2,C3")
     parser.add_argument("--repeats", type=int, default=3, help="insertions per bore (averaged)")
     parser.add_argument("--lift_mm", type=float, default=10.0, help="automatic lift after each recording (jog mode)")
+    parser.add_argument("--max_drop_mm", type=float, default=500.0,
+                        help="jog refuses to go further than this below the height at start")
     parser.add_argument("--freedrive", action="store_true", help="guide the cup by hand (teach mode) instead of jogging")
     main(parser.parse_args())
