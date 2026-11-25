@@ -39,6 +39,10 @@ class fileSaveHelp(object):
 
         #check if CSV Files are available
         tmp_dummyFolder = '/tmp/processed_csv'
+        if os.path.exists(tmp_dummyFolder) and not os.access(tmp_dummyFolder, os.W_OK):
+            # made by another account on this PC (e.g. edg3090): the rename below would fail for every file
+            import getpass
+            tmp_dummyFolder = '/tmp/processed_csv_' + getpass.getuser()
         if not os.path.exists(tmp_dummyFolder):
             os.makedirs(tmp_dummyFolder)
         
