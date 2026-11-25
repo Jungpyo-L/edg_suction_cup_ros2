@@ -156,6 +156,11 @@ def dry_run(args, cup, cal, rows, policy_dir):
     print('\n%d trials planned; controllers load and run on zero pressure.' % len(rows))
 
 
+def vacuum_scale(args):
+    """Factor applied to the measured vacuum before it goes to a controller (1 unless --normalize_vacuum)."""
+    return P_MAX_PA / (args.pmax_kpa * 1000.0) if getattr(args, 'normalize_vacuum', False) else 1.0
+
+
 def seal_threshold_pa(args):
     """Success threshold (Pa, every chamber): --seal_kpa when given, else seal_frac * pmax_kpa."""
     kpa = getattr(args, 'seal_kpa', None)
@@ -164,8 +169,10 @@ def seal_threshold_pa(args):
 
 def run_trial(args, cup, plan, rtde, io, ctrl):
     """One trial on the robot. Returns (summary dict, per-tick arrays dict)."""
-    dt = 1.0 / CONTROL_HZ
-    p_max = args.pmax_kpa * 1000.0
+    dt = 1.0 / CONTROL_HZ                       # simulator time per control tick: the controllers always see this
+    time_scale = float(getattr(args, 'time_scale', 1.0))
+    period = dt * time_scale                    # real time per tick: time_scale 4 = same path per tick at 1/4 speed
+    vac_scale = vacuum_scale(args)
     seal_pa = seal_threshold_pa(args)
     hover = tool_pose([plan.xy[0], plan.xy[1], plan.z_top + HOVER_MM / 1000.0], plan.psi)
     touch = tool_pose([plan.xy[0], plan.xy[1], plan.z_top + 0.001], plan.psi)
@@ -214,7 +221,10 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
             if np.all(vac >= seal_pa):
                 reason, seal_tick = 'sealed', tick
                 break
-            a = ctrl.act(vac, integ.theta, dt)
+            # The controllers were fixed for a sealed vacuum of P_MAX_PA; with --normalize_vacuum the measured vacuum
+            # is rescaled so that this session's sealed vacuum (--pmax_kpa) maps onto it. The stop test above uses
+            # the measured values.
+            a = ctrl.act(vac * vac_scale, integ.theta, dt)
             target = integ.step(a)
             if plan.object_distance_mm(integ.xy) > BOUNDARY_MM:
                 reason = 'boundary'
@@ -223,7 +233,7 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
             if err_mm > TRACKING_LIMIT_MM:
                 reason = 'tracking_fault'
                 break
-            rtde.rtde_c.servoL(target, 0.0, 0.0, dt, args.lookahead, args.gain)
+            rtde.rtde_c.servoL(target, 0.0, 0.0, period, args.lookahead, args.gain)
             log['t'].append(time.monotonic() - t0)
             log['sensor_pa'].append(sensor)
             log['vacuum_sim_pa'].append(vac)
@@ -235,7 +245,7 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
                               else np.zeros(0))
             # Our own 50 Hz clock: rtde_c.waitPeriod() waits one RTDE period (1/125 s), which would run this loop
             # at 125 Hz while each target advances 1/50 s of motion, i.e. 2.5x the simulator speed.
-            next_tick += dt
+            next_tick += period
             slack = next_tick - time.monotonic()
             if slack > 0:
                 time.sleep(slack)
@@ -294,7 +304,8 @@ def save_trial(results, row, summary, arrays, args, policy_path):
     """<results>/trial_XXXX.npz (per tick, raw stream) and .json (summary), plus a row of <results>/results.csv.
     The .json marks the trial as done."""
     summary.update(trial_info(row), row=row, policy_file=str(policy_path) if policy_path else None,
-                   seal_frac=args.seal_frac, pmax_kpa=args.pmax_kpa, seal_kpa=getattr(args, 'seal_kpa', None), seal_threshold_pa=seal_threshold_pa(args), press_mm=args.press_mm,
+                   seal_frac=args.seal_frac, pmax_kpa=args.pmax_kpa, seal_kpa=getattr(args, 'seal_kpa', None), seal_threshold_pa=seal_threshold_pa(args),
+                   time_scale=float(getattr(args, 'time_scale', 1.0)), vacuum_scale=vacuum_scale(args), press_mm=args.press_mm,
                    finished=datetime.now().isoformat(timespec='seconds'))
     summary.setdefault('datalog_mat', None)
     np.savez_compressed(results / ('trial_%04d.npz' % int(row['trial'])), **arrays)
@@ -434,6 +445,12 @@ if __name__ == '__main__':
     parser.add_argument('--press_mm', type=float, default=5.0, help='press depth below the contact height (simulator: 5)')
     parser.add_argument('--settle_s', type=float, default=1.0, help='vacuum on, cup still, before the controller starts')
     parser.add_argument('--seal_frac', type=float, default=0.8, help='success: every chamber >= seal_frac * P_max')
+    parser.add_argument('--time_scale', type=float, default=1.0,
+                        help='real time per control tick / simulator tick (0.02 s). 4 = the same path per tick at a '
+                             'quarter of the speed (2.5 mm/s, 2.5 deg/s, 40 s limit), so that the vacuum (about 0.4 s lag) '
+                             'follows the cup as the quasi-static simulator assumes')
+    parser.add_argument('--normalize_vacuum', action='store_true',
+                        help='feed the controllers measured vacuum x (simulator P_max / --pmax_kpa)')
     parser.add_argument('--seal_kpa', type=float, default=None,
                         help='success: every chamber >= this vacuum (kPa); overrides seal_frac * pmax_kpa')
     parser.add_argument('--pmax_kpa', type=float, default=P_MAX_PA / 1000, help='sealed vacuum measured this session')
