@@ -156,11 +156,17 @@ def dry_run(args, cup, cal, rows, policy_dir):
     print('\n%d trials planned; controllers load and run on zero pressure.' % len(rows))
 
 
+def seal_threshold_pa(args):
+    """Success threshold (Pa, every chamber): --seal_kpa when given, else seal_frac * pmax_kpa."""
+    kpa = getattr(args, 'seal_kpa', None)
+    return kpa * 1000.0 if kpa is not None else args.seal_frac * args.pmax_kpa * 1000.0
+
+
 def run_trial(args, cup, plan, rtde, io, ctrl):
     """One trial on the robot. Returns (summary dict, per-tick arrays dict)."""
     dt = 1.0 / CONTROL_HZ
     p_max = args.pmax_kpa * 1000.0
-    seal_pa = args.seal_frac * p_max
+    seal_pa = seal_threshold_pa(args)
     hover = tool_pose([plan.xy[0], plan.xy[1], plan.z_top + HOVER_MM / 1000.0], plan.psi)
     touch = tool_pose([plan.xy[0], plan.xy[1], plan.z_top + 0.001], plan.psi)
     contact = tool_pose([plan.xy[0], plan.xy[1], plan.z_top - args.press_mm / 1000.0], plan.psi)
@@ -288,7 +294,7 @@ def save_trial(results, row, summary, arrays, args, policy_path):
     """<results>/trial_XXXX.npz (per tick, raw stream) and .json (summary), plus a row of <results>/results.csv.
     The .json marks the trial as done."""
     summary.update(trial_info(row), row=row, policy_file=str(policy_path) if policy_path else None,
-                   seal_frac=args.seal_frac, pmax_kpa=args.pmax_kpa, press_mm=args.press_mm,
+                   seal_frac=args.seal_frac, pmax_kpa=args.pmax_kpa, seal_kpa=getattr(args, 'seal_kpa', None), seal_threshold_pa=seal_threshold_pa(args), press_mm=args.press_mm,
                    finished=datetime.now().isoformat(timespec='seconds'))
     summary.setdefault('datalog_mat', None)
     np.savez_compressed(results / ('trial_%04d.npz' % int(row['trial'])), **arrays)
@@ -428,6 +434,8 @@ if __name__ == '__main__':
     parser.add_argument('--press_mm', type=float, default=5.0, help='press depth below the contact height (simulator: 5)')
     parser.add_argument('--settle_s', type=float, default=1.0, help='vacuum on, cup still, before the controller starts')
     parser.add_argument('--seal_frac', type=float, default=0.8, help='success: every chamber >= seal_frac * P_max')
+    parser.add_argument('--seal_kpa', type=float, default=None,
+                        help='success: every chamber >= this vacuum (kPa); overrides seal_frac * pmax_kpa')
     parser.add_argument('--pmax_kpa', type=float, default=P_MAX_PA / 1000, help='sealed vacuum measured this session')
     parser.add_argument('--lookahead', type=float, default=0.1, help='servoL lookahead time (s), 0.03-0.2')
     parser.add_argument('--gain', type=float, default=300.0, help='servoL gain, 100-2000')
