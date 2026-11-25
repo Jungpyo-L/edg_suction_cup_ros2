@@ -7,9 +7,10 @@
 #
 #   ros2 run suction_cup ais_fixture_calibration.py --cup ch3 --repeats 3
 #
-# Vacuum stays off. For each bore, put the cup a few mm into it (it need not reach the floor), then press Enter: the
-# cup is lowered at 1 mm/s until the wrist force sensor feels the floor (--touch_n, default 1 N), and that pose is
-# recorded. --no-touch records the pose as it is (height by eye). Moving: keyboard jog in the UR base frame with the tool orientation held fixed (default), or --freedrive
+# Vacuum stays off. 1) For each bore, put the cup into it and press Enter: this gives x, y and the plate rotation
+# (the depth in the bore does not matter). 2) Contact height: touch the top of objects --top_objects (default 1, 5,
+# 10, 6) at a flat spot, lip just touching, Enter; the contact plane is fitted through these points.
+# --touch lowers the cup by force sensing (--touch_n) instead of by eye. Moving: keyboard jog in the UR base frame with the tool orientation held fixed (default), or --freedrive
 # (teach mode, by hand). The TCP is set from ais/config/cups.json, so record with the cup that the trials use.
 # Output: <repo>/robot/calibration/fixture_calibration_<cup>.json (+ time-stamped copy and raw csv).
 
@@ -124,8 +125,9 @@ def predict_bore_xy(recorded, bores_mm, target):
 
 def main(args):
     sys.path.insert(0, str(Path(args.repo).expanduser()))
-    from tools.fixture_calibration import DEFAULT_LAYOUT, report, save, solve
-    bores_mm = json.loads(Path(DEFAULT_LAYOUT).read_text())["calibration"]["bores"]
+    from tools.fixture_calibration import DEFAULT_LAYOUT, Calibration, report, save, solve
+    layout = json.loads(Path(DEFAULT_LAYOUT).read_text())
+    bores_mm = layout["calibration"]["bores"]
 
     cup = load_cups(Path(args.cups).expanduser())[args.cup]
     out = Path(args.out) if args.out else Path(args.repo).expanduser() / "robot" / "calibration" / (
@@ -155,6 +157,7 @@ def main(args):
             print("force sensor ok (Fz noise %.3f N); height by touch-down at %.1f N" % (noise, args.touch_n))
 
         pts, raw = {}, []
+        wanted_tops = [v for v in args.top_objects.split(",") if v.strip()]
         for bore in args.bores.split(","):
             acc = []
             guess = predict_bore_xy(pts, bores_mm, bore)
@@ -171,13 +174,13 @@ def main(args):
                 if args.freedrive:
                     input("\n[%s] Enter to start freedrive, guide the cup into bore %s ..." % (label, bore))
                     rtde.rtde_c.teachMode()
-                    input("  cup in the bore%s? Enter to record " % ("" if not args.touch else " (it need not reach the floor)"))
+                    input("  cup in the bore? Enter to record ")
                     rtde.rtde_c.endTeachMode()
                     time.sleep(0.2)
                 else:
                     jog_to_bore(rtde, label, z_floor)
                 touch = {}
-                if force is not None:
+                if force is not None and not wanted_tops:   # bore height only matters without object-top points
                     while True:
                         before = actual_pose(rtde)
                         found, df, moved = touch_down(rtde, force, args)
@@ -213,7 +216,38 @@ def main(args):
                 spread = max(np.linalg.norm(np.array(v[:2]) - pts[bore][:2]) for v in acc) * 1000
                 print("  %s: repeatability (max xy distance from mean) %.3f mm" % (bore, spread))
 
-        d = solve(pts)
+        # contact height: touch object tops (the lip is easy to see there); the bore heights are then not used
+        tops = []
+        wanted = [int(v) for v in args.top_objects.split(",") if v.strip()]
+        if wanted:
+            xy_cal = Calibration(solve(pts), layout)
+            by_no = {int(n): o for o, n in layout["object_numbers"].items()}
+            print("\nContact height: touch the top of object(s) %s. Pick a flat spot where the whole lip is on the surface\n"
+                  "(not over a hole or the edge), lower until the lip just touches, Enter." % wanted)
+            for no in wanted:
+                label = "object %d top" % no
+                origin = xy_cal.base_to_robot_mm(layout["object_origins"][by_no[no]]) / 1000.0
+                hover = actual_pose(rtde)
+                hover[2] = max(hover[2], start[2])
+                if input("\n[%s] move above object %d (x %.1f, y %.1f mm) at the start height? [y/N] " % (
+                        label, no, origin[0] * 1000, origin[1] * 1000)).strip().lower() == "y":
+                    rtde.rtde_c.moveL(hover, 0.05, 0.2)
+                    rtde.rtde_c.moveL([origin[0], origin[1]] + hover[2:], 0.05, 0.2)
+                jog_to_bore(rtde, label, z_floor)
+                if force is not None:
+                    found, df, moved = touch_down(rtde, force, args)
+                    print("  touch-down: %s after %.2f mm (force change %+.2f N)" % (
+                        "contact" if found else "NO CONTACT - this point is recorded as it is", moved, df))
+                pose = actual_pose(rtde)
+                tops.append(pose[:3])
+                raw.append(dict(bore="top_obj%02d" % no, x=pose[0], y=pose[1], z=pose[2], tool_yaw_deg=tool_yaw_deg(pose),
+                                tilt_deg=tool_tilt_deg(pose), touch_force_n="", touch_travel_mm=""))
+                print("  %s: x=%.2f y=%.2f z=%.2f mm" % (label, pose[0] * 1000, pose[1] * 1000, pose[2] * 1000))
+                lifted = list(pose)
+                lifted[2] += args.lift_mm / 1000.0
+                rtde.rtde_c.moveL(lifted, JOG_SPEED * 2, JOG_ACC)
+
+        d = solve(pts, top_points_m=tops or None)
         d.update(cup=cup.name, tcp_offset=cup.tcp_offset)
         report(d)
         out, stamped = save(d, out)
@@ -246,9 +280,12 @@ if __name__ == "__main__":
     parser.add_argument("--bores", default="C0,C1,C2,C3")
     parser.add_argument("--repeats", type=int, default=3, help="insertions per bore (averaged)")
     parser.add_argument("--lift_mm", type=float, default=10.0, help="automatic lift after each recording (jog mode)")
-    parser.add_argument("--touch", action=argparse.BooleanOptionalAction, default=True,
-                        help="after Enter, lower the cup until the force sensor feels the bore floor (default); "
-                             "--no-touch records the pose as it is")
+    parser.add_argument("--top_objects", default="1,5,10,6",
+                        help="object numbers whose top is touched for the contact height (3 or more spread out: plane; "
+                             "1-2: height only, slope from the bores; empty: use the bore floors)")
+    parser.add_argument("--touch", action="store_true",
+                        help="after Enter, lower the cup at --touch_speed until the force sensor feels contact, and "
+                             "record there (object tops; bore floors when --top_objects is empty)")
     parser.add_argument("--touch_n", type=float, default=1.0, help="force change that counts as contact (N)")
     parser.add_argument("--touch_speed", type=float, default=1.0, help="touch-down speed (mm/s)")
     parser.add_argument("--touch_max_mm", type=float, default=10.0, help="give up after this much descent")
