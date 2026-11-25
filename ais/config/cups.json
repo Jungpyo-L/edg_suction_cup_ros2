@@ -16,11 +16,11 @@
     0,
     1
    ],
-   "body_offset_deg": -159.1,
+   "body_offset_deg": -153.0,
    "calibrated": true,
    "lip_radius_mm": 5.0,
    "chamber_check": "/home/jungpyo/EDG_Experiment/261125/chamber_check_ch3_143438.json",
-   "chamber_check_note": "2026-11-25 scan re-analysed with channel differences (the cup leaked as a whole: lip 2 mm over the chamfered bore). Channel 0 direction agrees with the visual check (about 60 deg clockwise from base +x at tool yaw -87). Fit rms 1.2 deg."
+   "chamber_check_note": "Set by hand 2026-11-25 (user decision): nominal mounting, at the default pose (tool yaw -87 deg in the base frame) sensor 1 points 60 deg clockwise from base +x, sensor 2 60 deg counter-clockwise, sensor 3 along -x, i.e. 27 / 147 / -93 deg from the tool x-axis. The 2026-11-25 scan (cup leaking as a whole, differential analysis) gave 22 / 142 / -101 deg (body_offset -159.1), 6 deg from this."
   },
   "ch6": {
    "chambers": 6,
