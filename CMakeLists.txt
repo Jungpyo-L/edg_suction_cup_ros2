@@ -53,6 +53,7 @@ install(PROGRAMS
   ais/nodes/ais_chamber_check.py
   ais/nodes/ais_fixture_calibration.py
   ais/nodes/ais_pressure_check.py
+  ais/nodes/ais_seal_survey.py
   ais/nodes/ais_trial_runner.py
   DESTINATION lib/${PROJECT_NAME}
 )
