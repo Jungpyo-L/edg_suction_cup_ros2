@@ -5,8 +5,8 @@
 N=${1:-30}; OUT=~/EDG_Experiment/cam; mkdir -p "$OUT"; k=0
 while true; do
   # 8 frames so that auto-exposure settles; keep the last
-  if timeout 20 ffmpeg -loglevel error -y -f v4l2 -input_format yuyv422 -video_size 1280x720 -i /dev/video4 \
-       -frames:v 8 -update 1 "$OUT/.tmp.jpg" 2>/dev/null; then
+  if timeout 20 ffmpeg -nostdin -loglevel error -y -f v4l2 -input_format yuyv422 -video_size 1280x720 -i /dev/video4 \
+       -frames:v 8 -update 1 "$OUT/.tmp.jpg" </dev/null 2>/dev/null; then
     mv "$OUT/.tmp.jpg" "$OUT/latest.jpg"
     [ $((k % 10)) -eq 0 ] && cp "$OUT/latest.jpg" "$OUT/cam_$(date +%Y%m%d_%H%M%S).jpg"
     k=$((k + 1))
