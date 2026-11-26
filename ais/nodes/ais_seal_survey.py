@@ -11,6 +11,9 @@
 # Points: 2D_Haptic_Search/robot/fixture_final_subset_K10/seal_points.json (object frame; clearance = distance to the
 # nearest edge or hole of the as-built outline). Per point and depth: hover, zero in air, press, vacuum on, hold
 # --hold_s, vacuum off, lift. Same approach, zeroing and press as a trial. Needs the fixture calibration of the cup.
+# Grid map (--grid_mm H --grid_step S): presses on a square grid of +-H mm around that point instead, zeroing once per
+# object and lifting 2 mm between points: the measured sealed region, to compare with the simulator at the same poses.
+#   ros2 run suction_cup ais_seal_survey.py --cup ch3 --objects 8,1,7 --grid_mm 6 --grid_step 1 --hold_s 2
 # Output: table on screen and ~/EDG_Experiment/ais_robot_demo/seal_survey_<time>.json (with the vacuum time course).
 
 import sys
@@ -73,6 +76,40 @@ def main(args):
                 current[2] = z_top + TRAVEL_MM / 1000.0
                 rtde.rtde_c.moveL(current, MOVE_SPEED, MOVE_ACC)
             move_unwound(rtde, tool_pose([x, y, z_top + TRAVEL_MM / 1000.0], psi), args.q6_home_deg)
+            if args.grid_mm > 0:
+                n = int(round(args.grid_mm / args.grid_step))
+                offsets = [(i * args.grid_step, k * args.grid_step) for k in range(-n, n + 1)
+                           for i in (range(-n, n + 1) if (k + n) % 2 == 0 else range(n, -n - 1, -1))]   # serpentine
+                depth = args.press_mm[0]
+                rtde.rtde_c.moveL(tool_pose([x, y, z_top + HOVER_MM / 1000.0], psi), MOVE_SPEED, MOVE_ACC)
+                time.sleep(0.3)
+                io.zero_in_air()
+                print("object %d: %d grid points, about %.0f min" % (no, len(offsets), len(offsets) * (args.hold_s + args.release_s + 2.5) / 60))
+                for k, (dx, dy) in enumerate(offsets):
+                    gxyz, _ = cal.object_pose(oid, (pt["x_obj_mm"] + dx, pt["y_obj_mm"] + dy))
+                    gx, gy, gz = (float(v) for v in gxyz)
+                    rtde.rtde_c.moveL(tool_pose([gx, gy, gz + 0.002], psi), MOVE_SPEED / 2, MOVE_ACC)
+                    rtde.rtde_c.moveL(tool_pose([gx, gy, gz - depth / 1000.0], psi), TOUCH_SPEED * 2, TOUCH_ACC)
+                    io.vacuum(True)
+                    t0, t, vac = time.monotonic(), [], []
+                    while time.monotonic() - t0 < args.hold_s:
+                        t.append(time.monotonic() - t0)
+                        vac.append(-io.pressure() / 1000.0)
+                        time.sleep(0.01)
+                    io.vacuum(False)
+                    t, vac = np.array(t), np.array(vac)
+                    final = vac[t > t[-1] - 0.3].mean(axis=0)
+                    rows.append(dict(object_no=no, object=oid, x_obj_mm=round(pt["x_obj_mm"] + dx, 3),
+                                     y_obj_mm=round(pt["y_obj_mm"] + dy, 3), dx_mm=dx, dy_mm=dy, tool_yaw_deg=psi,
+                                     body_yaw_obj_deg=float(cup.body_yaw_for_psi(psi) - cal.theta),
+                                     clearance_mm=pt["clearance_mm"], press_mm=depth, vacuum_kpa=final.round(3).tolist(),
+                                     vacuum_half_kpa=vac[np.argmin(abs(t - args.hold_s / 2))].round(3).tolist()))
+                    if k % 13 == 0 or final.min() > 15:
+                        print("  %3d/%d  (%+.0f, %+.0f) mm : %s kPa" % (k + 1, len(offsets), dx, dy, np.array2string(final, precision=1)))
+                    time.sleep(args.release_s)
+                    rtde.rtde_c.moveL(tool_pose([gx, gy, gz + 0.002], psi), TOUCH_SPEED * 4, TOUCH_ACC)
+                rtde.rtde_c.moveL(tool_pose([x, y, z_top + HOVER_MM / 1000.0], psi), MOVE_SPEED, MOVE_ACC)
+                continue
             for depth in args.press_mm:
                 rtde.rtde_c.moveL(tool_pose([x, y, z_top + HOVER_MM / 1000.0], psi), MOVE_SPEED, MOVE_ACC)
                 time.sleep(0.3)
@@ -115,8 +152,8 @@ def main(args):
     if rows:
         out = Path(args.results).expanduser()
         out.mkdir(parents=True, exist_ok=True)
-        path = out / ("seal_survey_%s_%s.json" % (cup.name, datetime.now().strftime("%Y%m%d_%H%M%S")))
-        path.write_text(json.dumps(dict(cup=cup.name, hold_s=args.hold_s, rows=rows), indent=1))
+        path = out / ("seal_%s_%s_%s.json" % ("grid" if args.grid_mm > 0 else "survey", cup.name, datetime.now().strftime("%Y%m%d_%H%M%S")))
+        path.write_text(json.dumps(dict(cup=cup.name, hold_s=args.hold_s, grid_mm=args.grid_mm, grid_step=args.grid_step, rows=rows), indent=1))
         low = np.array([min(r["vacuum_kpa"]) for r in rows])
         print("\nlowest chamber per point: min %.1f, median %.1f, max %.1f kPa -> %s" % (low.min(), np.median(low), low.max(), path))
 
@@ -126,6 +163,8 @@ if __name__ == "__main__":
     parser.add_argument("--cup", required=True)
     parser.add_argument("--objects", default=None, help="object numbers, e.g. 10,7,9 (default: all)")
     parser.add_argument("--press_mm", type=float, nargs="+", default=[5.0], help="press depth(s) below the contact height")
+    parser.add_argument("--grid_mm", type=float, default=0.0, help="map a square grid of +-this around the point (0: single point)")
+    parser.add_argument("--grid_step", type=float, default=1.0)
     parser.add_argument("--hold_s", type=float, default=3.0, help="vacuum-on time per point")
     parser.add_argument("--release_s", type=float, default=0.5)
     parser.add_argument("--psi_deg", type=float, default=None, help="tool yaw (default: keep the current one)")
