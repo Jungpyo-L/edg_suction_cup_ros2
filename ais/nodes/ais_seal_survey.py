@@ -108,6 +108,7 @@ def main(args):
                         vac.append(-io.pressure() / 1000.0)
                         time.sleep(0.01)
                     io.vacuum(False)
+                    io.require_fresh_pressure()
                     t, vac = np.array(t), np.array(vac)
                     final = vac[t > t[-1] - 0.3].mean(axis=0)
                     rows.append(dict(object_no=no, object=oid, x_obj_mm=round(pt["x_obj_mm"] + dx, 3),
@@ -134,6 +135,7 @@ def main(args):
                     vac.append(-io.pressure() / 1000.0)                    # kPa, vacuum positive, sensor order
                     time.sleep(0.01)
                 io.vacuum(False)
+                io.require_fresh_pressure()
                 t, vac = np.array(t), np.array(vac)
                 final = vac[t > t[-1] - 0.5].mean(axis=0)
                 reach = [float(t[np.argmax(vac[:, j] >= 0.9 * final[j])]) if final[j] > 1.0 else None for j in range(vac.shape[1])]

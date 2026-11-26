@@ -126,6 +126,7 @@ class HapticRosIO:
         while time.monotonic() < t_end:
             samples.append(self.pressure())
             time.sleep(0.005)
+        self.require_fresh_pressure()   # a stopped stream would give a frozen average (chamber check, 2026-11-26)
         return np.mean(samples, axis=0)
 
     def close(self):

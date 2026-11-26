@@ -47,11 +47,19 @@
     0.0,
     0.0
    ],
-   "chamber_map": null,
-   "body_offset_deg": null,
-   "calibrated": false,
+   "chamber_map": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "body_offset_deg": -39.0,
+   "calibrated": true,
    "lip_radius_mm": 5.0,
-   "note": "tcp_offset is the value the 2026-11-26 fixture calibration was recorded with (run as ch6); the real cup length is absorbed by the object-top touch points."
+   "note": "tcp_offset is the value the 2026-11-26 fixture calibration was recorded with (run as ch6); the real cup length is absorbed by the object-top touch points.",
+   "chamber_check": "/home/jungpyo/EDG_Experiment/261126/chamber_check_ch5_003042.json",
+   "chamber_check_note": "Set by hand 2026-11-26 from the design mounting (user: at the default pose, tool yaw -87 deg, sensor 1 points 90 deg clockwise from base +x, i.e. -3 deg from the tool x-axis; 72 deg spacing). The scan lost the sensor board at step 18 of 24 (its fit is invalid); steps 1-17 show the weakest channel going 2, 1, 5, 4 as tool yaw increases, centred near psi -195, -134, -62, +10 deg: sensor numbers run counter-clockwise seen from above and sensor 1 lies about -1 deg from the tool x-axis."
   },
   "ch4": {
    "chambers": 4,
