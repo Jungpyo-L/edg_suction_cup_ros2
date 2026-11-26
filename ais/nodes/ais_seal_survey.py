@@ -12,7 +12,7 @@
 # nearest edge or hole of the as-built outline). Per point and depth: hover, zero in air, press, vacuum on, hold
 # --hold_s, vacuum off, lift. Same approach, zeroing and press as a trial. Needs the fixture calibration of the cup.
 # Grid map (--grid_mm H --grid_step S): presses on a square grid of +-H mm around that point instead, zeroing once per
-# object and lifting 2 mm between points: the measured sealed region, to compare with the simulator at the same poses.
+# object and lifting 5 mm between points: the measured sealed region, to compare with the simulator at the same poses.
 #   ros2 run suction_cup ais_seal_survey.py --cup ch3 --objects 8,1,7 --grid_mm 6 --grid_step 1 --hold_s 2
 # Output: table on screen and ~/EDG_Experiment/ais_robot_demo/seal_survey_<time>.json (with the vacuum time course).
 
@@ -35,6 +35,16 @@ from ais_haptic.robot_frame import load_cups, tool_pose, tool_yaw_deg
 HOVER_MM, TRAVEL_MM = 10.0, 30.0
 MOVE_SPEED, MOVE_ACC = 0.05, 0.3
 TOUCH_SPEED, TOUCH_ACC = 0.005, 0.1
+
+
+GRID_LIFT_MM = 5.0   # clear of the surface between grid points (the lip is pressed 5 mm; it must be free before moving sideways)
+
+
+def go(rtde, pose, speed, acc):
+    if not rtde.rtde_c.moveL(pose, speed, acc):
+        raise RuntimeError("Move refused by the controller (protective stop or limit); survey stopped.")
+    if rtde.rtde_r.isProtectiveStopped() or rtde.rtde_r.isEmergencyStopped():
+        raise RuntimeError("Robot stopped (protective / emergency stop); survey stopped.")
 
 
 def main(args):
@@ -84,12 +94,13 @@ def main(args):
                 rtde.rtde_c.moveL(tool_pose([x, y, z_top + HOVER_MM / 1000.0], psi), MOVE_SPEED, MOVE_ACC)
                 time.sleep(0.3)
                 io.zero_in_air()
-                print("object %d: %d grid points, about %.0f min" % (no, len(offsets), len(offsets) * (args.hold_s + args.release_s + 2.5) / 60))
+                print("object %d: %d grid points, about %.0f min" % (no, len(offsets), len(offsets) * (args.hold_s + args.release_s + 4.0) / 60))
                 for k, (dx, dy) in enumerate(offsets):
                     gxyz, _ = cal.object_pose(oid, (pt["x_obj_mm"] + dx, pt["y_obj_mm"] + dy))
                     gx, gy, gz = (float(v) for v in gxyz)
-                    rtde.rtde_c.moveL(tool_pose([gx, gy, gz + 0.002], psi), MOVE_SPEED / 2, MOVE_ACC)
-                    rtde.rtde_c.moveL(tool_pose([gx, gy, gz - depth / 1000.0], psi), TOUCH_SPEED * 2, TOUCH_ACC)
+                    # every move is checked: a refused move (protective stop) ends the run instead of pressing on
+                    go(rtde, tool_pose([gx, gy, gz + GRID_LIFT_MM / 1000.0], psi), MOVE_SPEED / 2, MOVE_ACC)
+                    go(rtde, tool_pose([gx, gy, gz - depth / 1000.0], psi), TOUCH_SPEED * 2, TOUCH_ACC)
                     io.vacuum(True)
                     t0, t, vac = time.monotonic(), [], []
                     while time.monotonic() - t0 < args.hold_s:
@@ -107,7 +118,7 @@ def main(args):
                     if k % 13 == 0 or final.min() > 15:
                         print("  %3d/%d  (%+.0f, %+.0f) mm : %s kPa" % (k + 1, len(offsets), dx, dy, np.array2string(final, precision=1)))
                     time.sleep(args.release_s)
-                    rtde.rtde_c.moveL(tool_pose([gx, gy, gz + 0.002], psi), TOUCH_SPEED * 4, TOUCH_ACC)
+                    go(rtde, tool_pose([gx, gy, gz + GRID_LIFT_MM / 1000.0], psi), TOUCH_SPEED * 4, TOUCH_ACC)
                 rtde.rtde_c.moveL(tool_pose([x, y, z_top + HOVER_MM / 1000.0], psi), MOVE_SPEED, MOVE_ACC)
                 continue
             for depth in args.press_mm:
@@ -136,6 +147,8 @@ def main(args):
                 rtde.rtde_c.moveL(tool_pose([x, y, z_top + HOVER_MM / 1000.0], psi), MOVE_SPEED, MOVE_ACC)
     except KeyboardInterrupt:
         print("\nstopped")
+    except RuntimeError as exc:
+        print("\nSTOPPED: %s (points measured so far are saved)" % exc)
     finally:
         io.vacuum(False)
         if rtde is not None:
