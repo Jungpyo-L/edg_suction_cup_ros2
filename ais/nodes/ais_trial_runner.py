@@ -213,7 +213,8 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
     try:
         for tick in range(int(round(DURATION_S * CONTROL_HZ))):
             sensor = io.pressure()
-            if hasattr(io, 'pressure_age_s') and io.pressure_age_s() > 0.5:
+            age = io.pressure_age_s() if hasattr(io, 'pressure_age_s') else None
+            if isinstance(age, float) and age > 0.5:
                 reason = 'sensor_lost'
                 break
             vac = cup.sim_vacuum(sensor)
