@@ -19,6 +19,10 @@ VACUUM_ON, VACUUM_OFF = 100, 0
 SYNC_RESET, SYNC_START, SYNC_STOP = 0, 1, 2
 
 
+class SensorStreamLost(RuntimeError):
+    pass
+
+
 class HapticRosIO:
     def __init__(self, node, chambers):
         self.node, self.chambers = node, chambers
@@ -27,6 +31,7 @@ class HapticRosIO:
         self.sync_pub = node.create_publisher(Int8, "sync", 1)
         self.raw_lock = threading.Lock()
         self.raw = None          # list of (receive time, header stamp, values) while recording
+        self.last_packet = None  # receive time (monotonic) of the newest /SensorPacket
         node.create_subscription(SensorPacket, "SensorPacket", self._raw_callback, 100)
         self.datalog_client = node.create_client(Enable, "data_logging")
         self.executor = SingleThreadedExecutor()
@@ -40,6 +45,7 @@ class HapticRosIO:
             self.executor.spin_once(timeout_sec=0.01)
 
     def _raw_callback(self, msg):
+        self.last_packet = time.monotonic()
         with self.raw_lock:
             if self.raw is not None:
                 self.raw.append((time.monotonic(), msg.header.stamp.sec + 1e-9 * msg.header.stamp.nanosec, list(msg.data)))
@@ -94,6 +100,17 @@ class HapticRosIO:
                 return
             time.sleep(0.05)
         raise RuntimeError("No /SensorPacket within %.0f s. Is ESP32_Pressure.py running?" % timeout_s)
+
+    def pressure_age_s(self):
+        """Seconds since the newest pressure packet (inf before the first)."""
+        return float('inf') if self.last_packet is None else time.monotonic() - self.last_packet
+
+    def require_fresh_pressure(self, max_age_s=0.5):
+        """Raise when the sensor stream has stopped: the averaged value would stay frozen and every trial after
+        that would run blind (2026-11-25: the board dropped off USB and 93 trials were recorded with no data)."""
+        age = self.pressure_age_s()
+        if age > max_age_s:
+            raise SensorStreamLost("No pressure packet for %.1f s: the sensor board stopped (USB?). Run stopped." % age)
 
     def zero_in_air(self):
         """Zero the sensors; only call with the cup in air (handoff: never zero on a surface)."""

@@ -192,6 +192,8 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
     q6_start = wrist3_deg(rtde)
     rtde.rtde_c.moveL(hover, MOVE_SPEED, MOVE_ACC)
     time.sleep(0.3)
+    if hasattr(io, 'require_fresh_pressure'):
+        io.require_fresh_pressure()            # before any contact: a dead sensor stream stops the run here
     io.zero_in_air()
     if getattr(args, 'datalog', False):
         io.datalog(True)
@@ -211,6 +213,9 @@ def run_trial(args, cup, plan, rtde, io, ctrl):
     try:
         for tick in range(int(round(DURATION_S * CONTROL_HZ))):
             sensor = io.pressure()
+            if hasattr(io, 'pressure_age_s') and io.pressure_age_s() > 0.5:
+                reason = 'sensor_lost'
+                break
             vac = cup.sim_vacuum(sensor)
             actual = list(rtde.rtde_r.getActualTCPPose())
             q6 = wrist3_deg(rtde)
@@ -400,6 +405,8 @@ def main(args):
             if file_help is not None:
                 file_help.clearTmpFolder()
             summary, arrays = run_trial(args, cup, plan, rtde, io, ctrl)
+            if summary['reason'] == 'sensor_lost':
+                raise RuntimeError('pressure stream lost during trial %s' % row['trial'])   # not saved: runs again
             if file_help is not None:
                 try:
                     summary['datalog_mat'] = save_datalog(file_help, row, summary, cup)
@@ -411,6 +418,9 @@ def main(args):
                 summary['time_s'], summary['path_cmd_mm'], summary['end_object_distance_mm']))
     except KeyboardInterrupt:
         print('\nStopped by the user. The interrupted trial is not saved and will run again next time.')
+    except RuntimeError as exc:
+        print('\nSTOPPED: %s\nThe interrupted trial is not saved and will run again next time.' % exc)
+        exit_code = 2
     finally:
         io.vacuum(False)
         if args.datalog:
@@ -432,6 +442,8 @@ def main(args):
         io.close()
         node.destroy_node()
         rclpy.shutdown()
+    if locals().get('exit_code'):
+        sys.exit(exit_code)      # so that "runner && next_tool" does not start the next tool after a failure
 
 
 if __name__ == '__main__':
