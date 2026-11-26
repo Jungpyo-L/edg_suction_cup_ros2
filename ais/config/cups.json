@@ -36,6 +36,38 @@
    "body_offset_deg": null,
    "calibrated": false,
    "lip_radius_mm": 5.0
+  },
+  "ch5": {
+   "chambers": 5,
+   "tcp_offset": [
+    0.0,
+    0.0,
+    0.1692,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "chamber_map": null,
+   "body_offset_deg": null,
+   "calibrated": false,
+   "lip_radius_mm": 5.0,
+   "note": "tcp_offset is the value the 2026-11-26 fixture calibration was recorded with (run as ch6); the real cup length is absorbed by the object-top touch points."
+  },
+  "ch4": {
+   "chambers": 4,
+   "tcp_offset": [
+    0.0,
+    0.0,
+    0.1692,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "chamber_map": null,
+   "body_offset_deg": null,
+   "calibrated": false,
+   "lip_radius_mm": 5.0,
+   "note": "not mounted yet; tcp_offset placeholder"
   }
  }
 }

@@ -56,8 +56,9 @@ TRACKING_LIMIT_MM = 3.0
 HOLD_AFTER_STOP_S = 1.0     # still, vacuum on, after every trial end (sealed or not)
 STATIC_WINDOW_S = 0.5       # static-pressure statistics use the last part of a still period
 RELEASE_WAIT_S = 0.5
-POLICY_FILES = {('ppo', 3): 'ppo_ch3_v3_s2_ch3_s4.npz', ('ppo', 6): 'ppo_ch6_v3_s2_ch6_s4.npz'}
-POLICY_NAMES = {'ppo_ch3_v3_s2_ch3_s4.npz': 's2_ch3_s4', 'ppo_ch6_v3_s2_ch6_s4.npz': 's2_ch6_s4'}   # v3 refit runs
+POLICY_FILES = {('ppo', 3): 'ppo_ch3_v3_s2_ch3_s4.npz', ('ppo', 6): 'ppo_ch6_v3_s2_ch6_s4.npz',
+                ('ppo', 5): 'ppo_ch5_v3_s2_ch5_s4.npz', ('ppo', 4): 'ppo_ch4_v3_s2_ch4_s1.npz'}
+POLICY_NAMES = {f: f.split('_v3_')[1][:-4] for f in POLICY_FILES.values()}   # v3 refit runs, e.g. s2_ch3_s4
 
 
 def parse_trials(spec):
@@ -348,6 +349,8 @@ def main(args):
     cal_path = Path(args.calibration).expanduser() if args.calibration else \
         Path(args.repo).expanduser() / 'robot' / 'calibration' / ('fixture_calibration_%s.json' % args.cup)
     policy_dir = Path(args.policies).expanduser()
+    if args.schedule is None:   # 3ch and 6ch: trial_schedule.csv; 4ch and 5ch (added 2026-11-26): trial_schedule_ch45.csv
+        args.schedule = '%s/robot/fixture_final_subset_K10/trial_schedule%s.csv' % (args.repo, '_ch45' if cup.chambers in (4, 5) else '')
     rows = load_rows(args, cup)
     if not rows:
         raise SystemExit('No schedule rows match --cup/--trials/--controllers.')
@@ -450,7 +453,7 @@ def main(args):
 if __name__ == '__main__':
     repo = '~/projects/2D_Haptic_Search'
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cup', required=True, help='cup in ais/config/cups.json (ch3, ch6); selects that block')
+    parser.add_argument('--cup', required=True, help='cup in ais/config/cups.json (ch3, ch4, ch5, ch6); selects that block')
     parser.add_argument('--trials', default=None, help='trial numbers, e.g. 0-5,12')
     parser.add_argument('--controllers', default=None, help='comma list, e.g. ppo,yaw_momentum')
     parser.add_argument('--dry-run', action='store_true', help='plan only: print start poses, load controllers; no ROS/robot')
@@ -472,7 +475,7 @@ if __name__ == '__main__':
     parser.add_argument('--datalog', action=argparse.BooleanOptionalAction, default=True,
                         help='also record data_logger.py topics to a .mat per trial (default on; --no-datalog to skip)')
     parser.add_argument('--q6_home_deg', type=float, default=0.0, help='wrist 3 is unwound to within 180 deg of this before each trial')
-    parser.add_argument('--schedule', default=repo + '/robot/fixture_final_subset_K10/trial_schedule.csv')
+    parser.add_argument('--schedule', default=None, help='default: trial_schedule.csv (3ch, 6ch) or trial_schedule_ch45.csv (4ch, 5ch) of the fixture')
     parser.add_argument('--calibration', default=None, help='default <repo>/robot/calibration/fixture_calibration_<cup>.json')
     parser.add_argument('--results', default='~/EDG_Experiment/ais_robot_demo')
     parser.add_argument('--repo', default=repo)

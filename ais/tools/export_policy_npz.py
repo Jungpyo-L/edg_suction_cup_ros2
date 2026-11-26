@@ -17,6 +17,9 @@ PACKAGE = Path(__file__).resolve().parents[1]   # ais/
 ROBOT_POLICIES = {
     'ppo_ch3_v3_s2_ch3_s4': ('ppo', 'outputs/v3_train_20261109/runs/s2_ch3_s4/final.zip'),
     'ppo_ch6_v3_s2_ch6_s4': ('ppo', 'outputs/v3_train_20261109/runs/s2_ch6_s4/final.zip'),
+    # 2026-11-26: 5ch and 4ch cups, same rule applied to legdev_summary.json (ch5 -> s4, ch4 -> s1)
+    'ppo_ch5_v3_s2_ch5_s4': ('ppo', 'outputs/v3_train_20261109/runs/s2_ch5_s4/final.zip'),
+    'ppo_ch4_v3_s2_ch4_s1': ('ppo', 'outputs/v3_train_20261109/runs/s2_ch4_s1/final.zip'),
 }
 
 
