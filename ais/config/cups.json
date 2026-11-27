@@ -32,10 +32,19 @@
     0.0,
     0.0
    ],
-   "chamber_map": null,
-   "body_offset_deg": null,
-   "calibrated": false,
-   "lip_radius_mm": 5.0
+   "chamber_map": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "body_offset_deg": -3.0,
+   "calibrated": true,
+   "lip_radius_mm": 5.0,
+   "chamber_check": "/home/jungpyo/EDG_Experiment/261126/chamber_check_ch6_215534.json",
+   "chamber_check_note": "Set by hand 2026-11-26 from the design mounting (user): at the default pose (tool yaw -87 deg in the base frame) sensor 1 points 60 deg clockwise from base +x, i.e. 27 deg from the tool x-axis; sensors 60 deg apart, counter-clockwise. The 2026-11-26 scan agrees: sensor directions 34.5 / 90.0 / 136.4 / -155.4 / -91.3 / -29.9 deg from tool x (counter-clockwise; fit body_offset 177.4 with map [3,4,5,0,1,2], the same assignment as -2.6 with [0..5])."
   },
   "ch5": {
    "chambers": 5,
