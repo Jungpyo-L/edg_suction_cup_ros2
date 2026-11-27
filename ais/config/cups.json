@@ -80,11 +80,17 @@
     0.0,
     0.0
    ],
-   "chamber_map": null,
-   "body_offset_deg": null,
-   "calibrated": false,
+   "chamber_map": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "body_offset_deg": -3.0,
+   "calibrated": true,
    "lip_radius_mm": 5.0,
-   "note": "not mounted yet; tcp_offset placeholder"
+   "note": "tcp_offset 0.1692 m is the value the 2026-11-27 fixture calibration was recorded with; the real cup is about 0.150 m long (same as ch3), the difference is absorbed by the object-top touch points (measured top plane 19 mm low).",
+   "chamber_check_note": "Set by hand 2026-11-27 from the design mounting (user): at the default pose (tool yaw -87 deg in the base frame) sensor 1 points 45 deg clockwise from base +x, i.e. 42 deg from the tool x-axis; sensors 90 deg apart. Counter-clockwise numbering assumed as on the ch3/ch5/ch6 cups; to be confirmed by ais_chamber_check.py before the trials."
   }
  }
 }
